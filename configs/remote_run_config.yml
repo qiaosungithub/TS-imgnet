@@ -1,12 +1,12 @@
 training:
-    num_epochs: 80
-    warmup_epochs: 5
-    batch_size: 256
-    learning_rate: 0.0002
-    eval_per_epoch: 5
-    visualize_per_epoch: 5
+    num_epochs: 320
+    warmup_epochs: 20
+    batch_size: 1024
+    learning_rate: 0.0008
+    eval_per_epoch: 20
+    visualize_per_epoch: 20
     log_per_step: 100
-    noise_level: 0.2
+    noise_level: 0.1
 
     # stablize?
     optimizer: adamw
@@ -24,17 +24,13 @@ training:
 
     lr_schedule: const
 model:
-    # name: NF_Small_p2_b2
-    # name: NF_Small_p2_b6
-    # name: NF_Small_p2_b16_l4 # 121M
-    # name: NF_Small_p2_b4_l16 # 115M
-    name: NF_Small_p2_b8_l8 # 118M
-    # name: NF_2x_p2_b4_l4 # 117M, performance not good
-    # name: NF_Small_p4_b8_l8 # 117M
-    # teacher_nblocks: 6
-    # teacher_nblocks: 12
-    # dropout: 0.1
-    # prior_norm: 0.5 # default 1
+    name: TSNF_Small_p2_b8_l8 # 118M
+    teacher_dropout: 0.0
+    student_dropout: 0.0
+    # prior_norm: 0.5 # not supported now
+teacher: # for load teacher
+    name: NF_Small_p2_b8_l8
+    dropout: 0.0
 fid:
     on_use: True
     fid_per_epoch: 10
@@ -47,14 +43,10 @@ fid:
 # dataset:
 #     num_workers: 64 # NOTE: On V2, if you don't use num_workers=64, sometimes the code will exit unexpectedly
 
-# pretrain: /kmh-nfs-ssd-eu-mount/logs/sqa/Normalizing-Flow/useful_ckpt/checkpoint_43200 # load from a specific checkpoint
-# pretrain: /kmh-nfs-ssd-eu-mount/logs/sqa/nflow_exp/20250306_223545_q96tvu_kmh-tpuvm-v3-32-1__b_lr_ep_torchvision_r50_eval/checkpoint_19200 # b-6 teacher
-# load_pretrain_method: skip
-# load_pretrain_method: extreme
-# load_pretrain_method: extreme2
-# load_pretrain_method: last
+load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250411_151116_hts34m_kmh-tpuvm-v3-32-1__b_lr_ep_torchvision_r50_eval/checkpoint_800640 # p2b8l8 160ep noise 0.05
+# load_from: nan
+# just_evaluate: True # use this to just evaluate the model (without training)
+just_prior: True
 save_by_fid: True
 
-# load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250411_151116_hts34m_kmh-tpuvm-v3-32-1__b_lr_ep_torchvision_r50_eval/checkpoint_800640 # p2b8l8 160ep
-
-# just_evaluate: True # use this to just evaluate the model (without training)
+wandb_notes: "sqa sanity check"

@@ -1159,6 +1159,10 @@ NF_Default = partial(
     NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=4, num_layers=8, num_heads=6, num_blocks=8,
 )
 
+TSNF_Small_p2_b8_l8 = partial(
+    TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, mode=REV_ORDER_L2_EACH_BLOCK
+)
+
 if __name__== "__main__":
     print = __builtins__.print
     jax.config.update("jax_default_matmul_precision", "float32")
