@@ -1,18 +1,32 @@
-from absl import logging
 from typing import Any
-# from collections.abc import Callable
 
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
-# import numpy as np
-
+import numpy as np
 from functools import partial
 
 from utils.logging_utils import log_for_0
 
+def safe_split(rng):
+    if rng is None:
+        return None, None
+    else:
+        return jax.random.split(rng)
+
 ModuleDef = Any
 print = lambda *args, **kwargs : None
+
+### TEACHER STUDENT MODE ###
+# T and S are in the same order (T fixed); apply L2 loss (on z) on each block separately.
+SAME_ORDER_L2_EACH_BLOCK = 0 
+# T and S are in the same order (T fixed); apply L2 loss (on mu and alpha) on each block separately.
+SAME_ORDER_L2_MA_EACH_BLOCK = 1 
+# T and S are in reverse order (T fixed); apply L2 loss (on z) on each block separately.
+REV_ORDER_L2_EACH_BLOCK = 2
+# T and S are in reverse order (T fixed); apply L2 loss (on mu and alpha) on each block separately.
+REV_ORDER_L2_MA_EACH_BLOCK = 3
+############################
 
 def get_map_fn(map_method, teacher_nblocks, self_nblocks):
     map_fn = None
@@ -59,25 +73,18 @@ def edm_ema_scales_schedules(step, config, steps_per_epoch):
 # Pytorch-like initialization
 torch_linear = partial(nn.Dense, kernel_init=nn.initializers.xavier_uniform(), bias_init=nn.initializers.zeros)
 
-def safe_split(rng):
-    if rng is None:
-        return None, None
-    return jax.random.split(rng)
-
 class PermutationFlip:
     """Permutation and flip for images."""
 
-    # flip: bool = True
     def __init__(self, flip: bool = True):
         self.flip = flip
 
-    # @nn.compact
     def __call__(self, x: jnp.ndarray, inverse: bool = False):
-        # x = jnp.take(x, self.permutation, axis=-1)
         if self.flip:
             x = jnp.flip(x, axis=1)
         return x
-    
+
+# random permutation is not supported for now. Please refer to lyy's NF github repo
 
 class Attention(nn.Module):
     """Attention mechanism."""
@@ -91,15 +98,10 @@ class Attention(nn.Module):
         self.head_dim = self.in_channels // self.num_heads
         assert self.head_dim * self.num_heads == self.in_channels, "in_channels must be divisible by num_heads"
 
-        # self.scale = self.head_dim ** -0.5 # useless
-
         self.qkv = torch_linear(features=3 * self.in_channels, dtype=self.dtype)
         self.proj = torch_linear(features=self.in_channels, dtype=self.dtype)
         self.norm = nn.LayerNorm(dtype=self.dtype)
         self.projdrop = nn.Dropout(rate=self.dropout)
-        
-        # self.k_cache = self.variable('cache', 'k_cache', lambda: {'cond': [], 'uncond': []})
-        # self.v_cache = self.variable('cache', 'v_cache', lambda: {'cond': [], 'uncond': []})
         
     def __call__(self, 
                  x: jnp.ndarray, 
@@ -110,13 +112,6 @@ class Attention(nn.Module):
                  which_cache: str = 'cond', 
                  train: bool = True,
                  rng = None):
-        # x: [B, T, C]
-        # mask: [B, T, T]
-        # temp: scalar
-        # which_cache: str
-        # train: bool
-        
-        # print('\t\tattention get: ', k_cache and {k: len(v) and f'{len(v)}x{v[0].shape}' for k, v in k_cache.items()})
         
         B, T, C = x.shape
         x = self.norm(x.astype(self.dtype))
@@ -127,40 +122,25 @@ class Attention(nn.Module):
         v = v.reshape(B, T, self.num_heads, self.head_dim)
         # [B, T, H, D]
         
-        if not train:
-            # k_cache[which_cache].append(k)
-            # v_cache[which_cache].append(v)
-            # k = jnp.concatenate(k_cache[which_cache], axis=1)
-            # v = jnp.concatenate(v_cache[which_cache], axis=1)
+        if not train and k_cache is not None and v_cache is not None:
             k_idx = k_cache["idx"]
             v_idx = v_cache["idx"]
             k_cache[which_cache] = jax.lax.dynamic_update_slice(k_cache[which_cache], k, (0, k_idx, 0, 0))
             v_cache[which_cache] = jax.lax.dynamic_update_slice(v_cache[which_cache], v, (0, v_idx, 0, 0))
             k = k_cache[which_cache]
             v = v_cache[which_cache]
-            # k = jax.lax.dynamic_slice(k_cache[which_cache], (0, 0, 0, 0), (B, k_idx, self.num_heads, self.head_dim))
-            # v = jax.lax.dynamic_slice(v_cache[which_cache], (0, 0, 0, 0), (B, v_idx, self.num_heads, self.head_dim))
-            # print('k and v shape:', k.shape, v.shape)
             assert mask is not None, 'this KV cache impl. is different and require attn mask'
-            # print('mask shape:', mask.shape)
-            # assert k.shape[1] == T and v.shape[1] == T, f'k shape: {k.shape}, v shape: {v.shape}, T: {T}'
         else:
             assert k_cache is None and v_cache is None, "k_cache and v_cache must be None during training"
-        
-        # append
-        # print('T:', T)
-        # q = q[:, :T]
-        # k = k[:, :T]
-        # v = v[:, :T]
-        # print('qkv shape:', q.shape, k.shape, v.shape)
+  
         rng, rng_used = safe_split(rng)
-        attn = nn.dot_product_attention(query=q, key=k, value=v, mask=mask, dropout_rng=rng_used, deterministic=not train, precision=None, dropout_rate=self.dropout)
+        
+        attn = nn.dot_product_attention(query=q, key=k, value=v, mask=mask, dropout_rng=rng_used, deterministic=not train, precision=None, dropout_rate=self.dropout, broadcast_dropout=False, dtype=self.dtype)
         del rng_used
         attn = attn.reshape(B, T, C)
         attn = self.proj(attn) # [B, T, C]
         rng, rng_used = safe_split(rng)
-        attn = self.projdrop(attn, deterministic=not train, rng=rng_used)
-        del rng_used
+        attn = self.projdrop(attn, rng=rng_used, deterministic=not train)
         return attn, k_cache, v_cache
 
 class MLP(nn.Module):
@@ -173,11 +153,6 @@ class MLP(nn.Module):
 
     def setup(self):
         self.norm = nn.LayerNorm(dtype=self.dtype)
-        # self.net = nn.Sequential(
-        #     [torch_linear(features=4*self.out_channels, dtype=self.dtype),
-        #     partial(nn.gelu, approximate=False),
-        #     torch_linear(features=self.out_channels, dtype=self.dtype)]
-        # )
         self.net1 = torch_linear(features=4*self.out_channels, dtype=self.dtype)
         self.net2 = torch_linear(features=self.out_channels, dtype=self.dtype)
         self.drop = nn.Dropout(rate=self.dropout)
@@ -185,7 +160,6 @@ class MLP(nn.Module):
     def __call__(self, x: jnp.ndarray, train: bool = True, rng = None):
         # print("mlp:", x.shape, self.out_channels)
         x = self.norm(x.astype(self.dtype))
-        # return self.net(x)
         x = self.net1(x)
         rng, rng_used = safe_split(rng)
         x = self.drop(x, deterministic=not train, rng=rng_used)
@@ -224,8 +198,9 @@ class AttentionBlock(nn.Module):
         x = x + attn
         rng, rng_used = safe_split(rng)
         x = x + self.mlp(x, train=train, rng=rng_used)
-        del rng_used
         return x, k_cache, v_cache
+    
+# next cell prediction is not supported for now. Please refer to lyy's github repo.
 
 class MetaBlock(nn.Module):
     """Meta block."""
@@ -237,8 +212,10 @@ class MetaBlock(nn.Module):
     num_heads: int
     num_classes: int
     permutation: PermutationFlip
-    debug: bool = False
     dropout: float = 0.0
+    debug: bool = False
+    mode: int = SAME_ORDER_L2_EACH_BLOCK
+
     dtype: Any = jnp.float32
     
     def setup(self):
