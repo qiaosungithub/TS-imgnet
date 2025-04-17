@@ -1,0 +1,1 @@
+/kmh-nfs-ssd-eu-mount/code/qiao/work/tpu_scripts/init_preemptible_remote.sh

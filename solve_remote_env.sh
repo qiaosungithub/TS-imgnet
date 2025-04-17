@@ -1,0 +1,1 @@
+/kmh-nfs-ssd-eu-mount/code/qiao/work/tpu_scripts/solve_remote_env.sh

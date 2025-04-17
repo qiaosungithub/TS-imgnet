@@ -1,0 +1,1 @@
+/kmh-nfs-ssd-eu-mount/code/qiao/work/tpu_scripts/setup_remote_wandb.sh
