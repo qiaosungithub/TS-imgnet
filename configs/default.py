@@ -103,15 +103,16 @@ def get_config():
     training.seed = 0  # init random seed
     training.wandb = True
     training.noise_level = 0.0
+    training.label_drop_rate = 0.1
     
     # others
     # config.wandb = True
     config.load_from = ""
     config.pretrain = ""
     config.just_evaluate = False
-    config.load_pretrain_method = "skip"
+    config.just_prior = False
     config.save_by_fid = False
-    config.wandb_name = None
+    config.wandb_notes = ""
     return config
 
 

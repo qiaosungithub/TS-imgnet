@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import functools
+from functools import partial
 from typing import Any
 
 from absl import logging
@@ -24,10 +24,10 @@ import jax.numpy as jnp
 import input_pipeline
 from input_pipeline import prepare_batch_data
 import models.tarflow as tarflow
-from models.tarflow import NormalizingFlow, generate, edm_ema_scales_schedules
+from models.tarflow import TeacherStudent, generate_student, generate, edm_ema_scales_schedules, generate_prior
 from utils.vae_util import LatentManager
 from utils.info_util import print_params
-from utils.vis_util import make_grid_visualization, visualize_cifar_batch, float_to_uint8
+from utils.vis_util import make_grid_visualization, float_to_uint8
 from utils.ckpt_util import restore_checkpoint, restore_pretrained, save_checkpoint
 import utils.fid_util as fid_util
 import utils.sample_util as sample_util
@@ -241,14 +241,24 @@ def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn,
     return state, metrics
 
 
-def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_level, guidance, temperature=1.0, label_cond=True):
+def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_level, guidance, temperature=1.0, label_cond=True, student=True, just_prior=False):
     """
     Generate samples from the train state.
 
     sample_idx: each random sampled image corrresponds to a seed
     """
     rng_sample = random.fold_in(rng_init, sample_idx)  # fold in sample_idx
-    images = generate(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, noise_level=noise_level, temperature=temperature, label_cond=label_cond)
+
+    if just_prior: # for debug, first teacher x then student z
+        x, z = generate_prior(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, noise_level=noise_level, temperature=temperature, label_cond=label_cond)
+        z_all = lax.all_gather(z, axis_name="batch")  # each device has a copy
+        z_all = z_all.reshape(-1, *z_all.shape[2:])
+        x_all = lax.all_gather(x, axis_name="batch")
+        x_all = x_all.reshape(-1, *x_all.shape[2:])
+        return z_all
+    
+    generate_fn = generate_student if student else generate
+    images = generate_fn(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, noise_level=noise_level, temperature=temperature, label_cond=label_cond)
     images = images.transpose((0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
     assert images.shape == (device_batch_size, 4, 32, 32)
     images_all = lax.all_gather(images, axis_name="batch")  # each device has a copy
@@ -256,7 +266,7 @@ def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_le
     return images_all
 
 
-@functools.partial(jax.pmap, axis_name="x")
+@partial(jax.pmap, axis_name="x")
 def cross_replica_mean(x):
     """
     Compute an average of a variable across workers.
@@ -267,7 +277,7 @@ def sync_batch_stats(state):
     """Sync the batch statistics across replicas."""
     # Each device has its own version of the running average batch statistics and
     # we sync them before evaluation.
-    if state.batch_stats == {}:
+    if state.batch_stats == {} or all(not v for v in state.batch_stats.values()):
         return state
     return state.replace(batch_stats=cross_replica_mean(state.batch_stats))
 
@@ -292,9 +302,9 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=Fals
 def get_fid_evaluater(config, p_sample_step, logger, latent_manager):
     inception_net = fid_util.build_jax_inception()
     stats_ref = fid_util.get_reference(config.fid.cache_ref, inception_net)
-    run_p_sample_step_inner = functools.partial(run_p_sample_step, latent_manager=latent_manager)
-    
-    def eval_fid(state, ema_only=False):
+    run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager)
+
+    def eval_fid(state, ema_only=False, use_teacher=False):
         step = int(jax.device_get(state.step)[0])
         
         # NOTE: logging for FID should be done inside this function
@@ -320,8 +330,9 @@ def get_fid_evaluater(config, p_sample_step, logger, latent_manager):
         fid_score_ema = fid_util.compute_fid(
             mu, stats_ref["mu"], sigma, stats_ref["sigma"]
         )
-        log_for_0(f"w/ ema: FID at {num} samples: {fid_score_ema}")
-        logger.log_dict(step+1, {f"FID-{kk}k_ema": fid_score_ema})
+        T = 'teacher_' if use_teacher else ''
+        log_for_0(f"{T} w/ ema: FID at {num} samples: {fid_score_ema}")
+        logger.log_dict(step+1, {f"{T}FID-{kk}k_ema": fid_score_ema})
 
         vis = make_grid_visualization(samples_all, to_uint8=False)
         vis = jax.device_get(vis)
@@ -352,7 +363,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     ) % 4 == 0, "root path should be consistent with workdir"
 
     if config.training.wandb and rank == 0:
-        wandb.init(project="tarflow_exp" if not config.just_evaluate else "tarflow_exp_eval", dir=workdir, tags=["ImageNet", 'sqa'], name=config.wandb_name)
+        wandb.init(project="TS_imgnet" if not config.just_evaluate else "TS_imgnet_eval", dir=workdir, tags=['sqa'], name=config.wandb_name)
         wandb.config.update(config.to_dict())
         try:
             ka = re.search(
@@ -363,9 +374,12 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
                 r"kmh-tpuvm-v4-32-preemptible-yiyang(\d*)", workdir
             ).group()
         wandb.config.update({"ka": ka})
+        wandb.run.notes = config.wandb_notes
     logger = GoodLogger(use_wandb=config.training.wandb, workdir=workdir)
 
     rng = random.key(config.training.seed)
+    np.random.seed(config.training.seed)
+    
     global_batch_size = training_config.batch_size
     log_for_0("config.batch_size: {}".format(global_batch_size))
     if global_batch_size % jax.process_count() > 0:
@@ -407,12 +421,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     #                       Create Train State                           #
     ######################################################################
 
-    model: NormalizingFlow = create_model(
+    model: TeacherStudent = create_model(
         model_cls = getattr(tarflow, config.model.name),
         half_precision=config.training.half_precision,
         num_classes=config.dataset.num_classes,
         **config.model,
-        load_pretrain_method=config.load_pretrain_method,
     )
 
     state = create_train_state(rng, config, model, config.dataset.image_size, learning_rate_fn)
@@ -422,6 +435,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         log_for_0("Restoring from: {}".format(config.load_from))
         state = restore_checkpoint(state, config.load_from)
     elif config.pretrain != "":
+        raise NotImplementedError("Note that this 'pretrained' have a different meaning, see how `restore_pretrained` is implemented")
         assert os.path.exists(config.pretrain), "pretrained model not found. You should check GS bucket"
         log_for_0("Loading pre-trained from: {}".format(config.pretrain))
         
@@ -434,6 +448,23 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         # after load
         # example_element = jax.tree_leaves(state.params["blocks_0"])[0].reshape(-1)[0]
         # logging.info(f'after load example_element at layer 0: {example_element}')
+
+    ########################## load teacher #########################
+    if config.load_teacher_from != "" and not config.just_evaluate:
+        teacher_model = create_model(
+            model_cls = getattr(tarflow, config.teacher.name),
+            half_precision=config.training.half_precision,
+            num_classes=config.dataset.num_classes,
+            **config.teacher,
+        )
+        teacher_state = create_train_state(rng, config, teacher_model, config.dataset.image_size, learning_rate_fn)
+        log_for_0("Restoring from: {}".format(config.load_teacher_from))
+        teacher_state = restore_checkpoint(teacher_state, config.load_teacher_from)
+        state.params['teacher'] = teacher_state.ema_params
+        state.batch_stats['teacher'] = teacher_state.batch_stats
+        state.ema_params['teacher'] = teacher_state.ema_params
+        
+        del teacher_model, teacher_state
 
     if not config.just_evaluate:
         # step_offset > 0 if restarting from checkpoint
@@ -450,11 +481,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     #                     Prepare for Training Loop                      #
     ######################################################################
     assert config.training.ema_schedule in ['edm', 'const']
-    ema_scales_fn = functools.partial(
+    ema_scales_fn = partial(
         edm_ema_scales_schedules, steps_per_epoch=steps_per_epoch, config=config
     ) if config.training.ema_schedule == 'edm' else lambda x: (config.training.ema, 0)
     p_train_step = jax.pmap(
-        functools.partial(
+        partial(
             train_step_with_vae,
             rng_init=rng,
             learning_rate_fn=learning_rate_fn,
@@ -466,7 +497,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         axis_name="batch",
     )
     p_sample_step = jax.pmap(
-        functools.partial(
+        partial(
             sample_step,
             model=model,
             rng_init=jax.random.PRNGKey(0),
@@ -475,9 +506,12 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             noise_level=config.training.noise_level,
             temperature=config.fid.temperature,
             label_cond=config.fid.label_cond,
+            student=True,
+            just_prior=config.just_prior,
         ),
         axis_name="batch",
     )
+
     vis_sample_idx = jax.process_index() * jax.local_device_count() + jnp.arange(jax.local_device_count())  # for visualization
     logging.info(f"fixed_sample_idx: {vis_sample_idx}")
 
@@ -490,6 +524,23 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     )
     p_sample_step = lowered.compile()
     logging.info("p_sample_step compiled in {}s".format(timer.elapse_with_reset()))
+    
+    ######################### handling just_prior ####################
+    if config.just_prior:
+        # just prior sampling
+        log_for_0("Sampling for prior ...")
+        vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, ema=True)
+        print(f"vis shape: {vis.shape}")
+        vis = make_grid_visualization(vis)
+        logger.log_image(1, {"vis_sample": vis[0]})
+        
+        samples_all = sample_util.generate_samples_for_prior_eval(
+            state, config, p_sample_step, run_p_sample_step, ema=True
+        )
+        print(f"vis shape: {samples_all.shape}")
+        prior = 0.5 * (samples_all ** 2).mean()
+        logger.log_dict(1, {"prior": prior})
+        return state
 
     # prepare for FID evaluation
     if config.fid.on_use:
@@ -507,7 +558,39 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             fid_score_ema = fid_evaluator(state, ema_only=True)
             return state
 
-    logging.info("Initial compilation, this might take some minutes...")
+    ##################### handling teacher sanity #######################
+    p_sample_step_teacher = jax.pmap(
+        partial(
+            sample_step,
+            model=model,
+            rng_init=rng,
+            device_batch_size=config.fid.device_batch_size,
+            guidance=config.fid.guidance,
+            noise_level=config.training.noise_level,
+            temperature=config.fid.temperature,
+            label_cond=config.fid.label_cond,
+            student=False,
+            just_prior=False,
+        ),
+        axis_name="batch",
+    )
+    # compile p_sample_step_teacher
+    logging.info("Compiling p_sample_step_teacher...")
+    timer = Timer()
+    lowered = p_sample_step_teacher.lower(
+        params={"params": state.params, "batch_stats": {}},
+        sample_idx=vis_sample_idx,
+    )
+    p_sample_step_teacher = lowered.compile()
+    logging.info("p_sample_step_teacher compiled in {}s".format(timer.elapse_with_reset()))
+
+    if config.fid.sanity_teacher:
+        # eval teacher fid and log
+        log_for_0("evaluating teacher fid...")
+        fid_score_teacher = fid_evaluator(state, p_sample_step_teacher, ema_only=True, use_teacher=True)
+        assert fid_score_teacher < 10, 'bad teacher fid score {}'.format(fid_score_teacher) # NOTE: This is bad as expected, since the teacher doesn't denoise
+
+    log_for_0("Initial compilation, this might take some minutes...")
 
     ######################################################################
     #                           Training Loop                            #
@@ -607,8 +690,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
                 if config.save_by_fid:
                     state = sync_batch_stats(state)
                     save_checkpoint(state, workdir)
-            # logger.log_dict(step + 1, {"FID_ema": fid_score_ema})
-            # this FID can be used for saving the checkpoint with the best FID, i.e. "save_by_fid", which is not implemented yet
 
     # Wait until computations are done before exiting
     jax.random.normal(jax.random.key(0), ()).block_until_ready()

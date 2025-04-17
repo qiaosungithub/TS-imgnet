@@ -1027,7 +1027,8 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
 
 def generate_student(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True, mult_prior=1.0, denoise=True):
     """
-    Generate samples from the model
+    Generate samples from the model.
+    Here we only support mult_prior=1.0 for now.
     """
     patch_num = model.img_size // model.patch_size
     num_patches = patch_num ** 2
@@ -1064,6 +1065,7 @@ def generate_student(params, model: TeacherStudent, rng, n_sample, noise_level, 
     return x
 
 def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True):
+    # first teacher generate image, then flow using student to get latent. just for debug.
     patch_num = model.img_size // model.patch_size
     num_patches = patch_num ** 2
     in_channels = model.out_channels * model.patch_size * model.patch_size
