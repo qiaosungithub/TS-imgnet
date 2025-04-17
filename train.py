@@ -378,7 +378,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     logger = GoodLogger(use_wandb=config.training.wandb, workdir=workdir)
 
     rng = random.key(config.training.seed)
-    np.random.seed(config.training.seed)
     
     global_batch_size = training_config.batch_size
     log_for_0("config.batch_size: {}".format(global_batch_size))

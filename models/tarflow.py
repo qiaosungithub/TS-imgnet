@@ -248,7 +248,6 @@ class MetaBlock(nn.Module):
         x_proj = self.proj_in(x)
         # permutation = PermutationConfig.from_dict(self.permutation).build_permutation()
         pos_embed = self.permutation(self.pos_emebdding)
-        # pos_embed = apply_cell_trans(pos_embed, self.cell_size)
         x_proj = x_proj + pos_embed
         if self.class_embedding is not None:
             if y is not None:
@@ -264,7 +263,7 @@ class MetaBlock(nn.Module):
             del rng_used
             
         x_proj = self.proj_out(x_proj) # [B, T, 2*C]
-        x_proj = jnp.concatenate([jnp.zeros_like(x_proj[:, :self.square_cell_size]), x_proj[:, :-self.square_cell_size]], axis=1)
+        x_proj = jnp.concatenate([jnp.zeros_like(x_proj[:, :1]), x_proj[:, :-1]], axis=1)
         alpha, mu = jnp.split(x_proj, 2, axis=-1)
         if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
             x_new = (x - mu) * jnp.exp(-alpha) # [B, T, C_in]
@@ -478,8 +477,6 @@ def reverse_block_student(
     # head_dim = block.channels // num_heads
     
     assert T == block.num_patches
-    scs = block.cell_size ** 2
-    assert T % scs == 0, f"{T} % {scs} != 0"
     
     x_cond = block.apply(params, x, y, temp, which_cache, train, method=block.forward_flatten)
     x_uncond = block.apply(params, x, None, temp, which_cache, train, method=block.forward_flatten)
@@ -721,13 +718,14 @@ class TeacherStudent(nn.Module):
     # perms: list[PermutationConfig]
     num_classes: int = 0
     dtype: Any = jnp.float32
-    cell_size: int = 1
     teacher_dropout: float = 0.0
     student_dropout: float = 0.0
     mode: int = SAME_ORDER_L2_EACH_BLOCK
     debug: bool = False
+    prior_norm: float = 1.0 # not supported for now
     
     def setup(self):
+        assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
         self.teacher = NormalizingFlow(
             img_size=self.img_size,
             out_channels=self.out_channels,
@@ -740,8 +738,8 @@ class TeacherStudent(nn.Module):
             num_classes=self.num_classes,
             dtype=self.dtype,
             dropout=self.teacher_dropout,
-            cell_size=self.cell_size,
             debug=self.debug,
+            prior_norm=self.prior_norm,
         )
         if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
             raise NotImplementedError("SAME_ORDER_L2_EACH_BLOCK and SAME_ORDER_L2_MA_EACH_BLOCK are not implemented")
@@ -756,7 +754,6 @@ class TeacherStudent(nn.Module):
                 perms=self.perms,
                 num_classes=self.num_classes,
                 dtype=self.dtype,
-                cell_size=self.cell_size,
                 dropout=self.student_dropout,
                 mode=self.mode,
                 debug=self.debug,
@@ -770,13 +767,13 @@ class TeacherStudent(nn.Module):
                 num_layers=int(self.num_layers),
                 num_heads=self.num_heads,
                 num_blocks=self.num_blocks,
-                perms=self.perms[::-1],
+                # perms=self.perms[::-1],
                 num_classes=self.num_classes,
                 dtype=self.dtype,
-                cell_size=self.cell_size,
                 dropout=self.student_dropout,
                 mode=self.mode,
                 debug=self.debug,
+                prior_norm=self.prior_norm,
             )
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
@@ -919,13 +916,6 @@ def reverse(params,
     num_patches = patch_num ** 2
     in_channels = nf.out_channels * nf.patch_size * nf.patch_size
 
-    judge = lambda idx: idx % 2 == 1
-    
-    if nf.teacher_nblocks is not None:
-        log_for_0(f"teacher_nblocks: {nf.teacher_nblocks}")
-        map_fn = get_map_fn(nf.load_pretrain_method, nf.teacher_nblocks, nf.num_blocks)
-        judge = lambda idx: map_fn(idx) % 2 == 1
-    
     for i in range(nf.num_blocks-1,-1,-1):
         block_param = params['params']['teacher'][f'blocks_{i}']
         # x = block.reverse(x, y, temp=temp, which_cache=which_cache, train=train)
@@ -936,8 +926,7 @@ def reverse(params,
                 num_layers=nf.num_layers, 
                 num_heads=nf.num_heads, 
                 num_classes=nf.num_classes, 
-                # permutation=PermutationFlip(i % 2 == 1),
-                permutation=PermutationFlip(judge(i)),
+                permutation=PermutationFlip(i % 2 == 1),
                 debug=nf.debug,
             ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
         # print("mean during layer:", x.mean())
@@ -969,7 +958,6 @@ def reverse_student(params,
                     num_heads=nf.num_heads, 
                     num_classes=nf.num_classes, 
                     permutation=nf.perms[i],
-                    cell_size=nf.cell_size,
                     debug=nf.debug,
                 ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
     elif nf.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
@@ -982,8 +970,7 @@ def reverse_student(params,
                     num_layers=int(nf.num_layers), 
                     num_heads=nf.num_heads, 
                     num_classes=nf.num_classes, 
-                    permutation=nf.perms[nf.num_blocks-1-i],
-                    cell_size=nf.cell_size,
+                    permutation=PermutationFlip((nf.num_blocks-1-i)%2==1),
                     mode=nf.mode,
                     debug=nf.debug,
                 ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
@@ -1095,7 +1082,6 @@ def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, gu
                 num_heads=model.num_heads, 
                 num_classes=model.num_classes, 
                 permutation=PermutationFlip((model.num_blocks-1-i)%2==1),
-                cell_size=model.cell_size,
                 debug=model.debug,
                 mode=model.mode,
         ), z, y)
