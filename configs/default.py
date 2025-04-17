@@ -78,6 +78,7 @@ def get_config():
        "/kmh-nfs-ssd-eu-mount/data/cached/zhh/imgnet_256_train_jax_stats_20250205.npz"
     )
     fid.label_cond = True
+    fid.sanity_teacher = False
 
     # Training
     config.training = training = ml_collections.ConfigDict()
@@ -112,6 +113,7 @@ def get_config():
     config.just_evaluate = False
     config.just_prior = False
     config.save_by_fid = False
+    config.wandb_name = None
     config.wandb_notes = ""
     return config
 
