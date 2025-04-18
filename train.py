@@ -512,17 +512,17 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     )
 
     vis_sample_idx = jax.process_index() * jax.local_device_count() + jnp.arange(jax.local_device_count())  # for visualization
-    logging.info(f"fixed_sample_idx: {vis_sample_idx}")
+    log_for_0(f"fixed_sample_idx: {vis_sample_idx}")
 
     # compile p_sample_step
-    logging.info("Compiling p_sample_step...")
+    log_for_0("Compiling p_sample_step...")
     timer = Timer()
     lowered = p_sample_step.lower(
         params={"params": state.params, "batch_stats": {}},
         sample_idx=vis_sample_idx,
     )
     p_sample_step = lowered.compile()
-    logging.info("p_sample_step compiled in {}s".format(timer.elapse_with_reset()))
+    log_for_0("p_sample_step compiled in {}s".format(timer.elapse_with_reset()))
     
     ######################### handling just_prior ####################
     if config.just_prior:
@@ -574,20 +574,22 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         axis_name="batch",
     )
     # compile p_sample_step_teacher
-    logging.info("Compiling p_sample_step_teacher...")
+    log_for_0("Compiling p_sample_step_teacher...")
     timer = Timer()
     lowered = p_sample_step_teacher.lower(
         params={"params": state.params, "batch_stats": {}},
         sample_idx=vis_sample_idx,
     )
     p_sample_step_teacher = lowered.compile()
-    logging.info("p_sample_step_teacher compiled in {}s".format(timer.elapse_with_reset()))
+    log_for_0("p_sample_step_teacher compiled in {}s".format(timer.elapse_with_reset()))
 
     if config.fid.sanity_teacher:
+        fid_evaluator_T = get_fid_evaluater(config, p_sample_step_teacher, logger, latent_manager)
         # eval teacher fid and log
         log_for_0("evaluating teacher fid...")
-        fid_score_teacher = fid_evaluator(state, p_sample_step_teacher, ema_only=True, use_teacher=True)
-        assert fid_score_teacher < 10, 'bad teacher fid score {}'.format(fid_score_teacher) # NOTE: This is bad as expected, since the teacher doesn't denoise
+        fid_score_teacher = fid_evaluator_T(state, ema_only=True, use_teacher=True)
+        # assert fid_score_teacher < 10, 'bad teacher fid score {}'.format(fid_score_teacher) # NOTE: This is bad as expected, since the teacher doesn't denoise
+        return fid_score_teacher
 
     log_for_0("Initial compilation, this might take some minutes...")
 

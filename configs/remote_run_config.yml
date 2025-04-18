@@ -6,7 +6,7 @@ training:
     eval_per_epoch: 20
     visualize_per_epoch: 20
     log_per_step: 100
-    noise_level: 0.1
+    noise_level: 0.05
 
     # stablize?
     optimizer: adamw
@@ -40,6 +40,7 @@ fid:
     device_batch_size: 8
     temperature: 1.0
     label_cond: True
+    # sanity_teacher: True
 # dataset:
 #     num_workers: 64 # NOTE: On V2, if you don't use num_workers=64, sometimes the code will exit unexpectedly
 
