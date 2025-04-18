@@ -562,7 +562,7 @@ class NormalizingFlow(nn.Module):
                 train: bool = True,
                 rng = None,
         ):
-            # used for student traning. We now use forward_with_sg instead.
+            # used for student training, for vanilla L2 loss. We now use forward_with_sg with lyy's smart loss instead.
             raise DeprecationWarning
             N = xs.shape[0]
             assert N == self.num_blocks
@@ -678,22 +678,34 @@ class NormalizingFlow(nn.Module):
         # total_x = [x]
         x = self.patchify(x)  # [B, T, C]
         B, T, C = x.shape
-        xs = jnp.zeros((self.num_blocks+1, B, T, C), dtype=self.dtype)
-        alphas = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
-        mus = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
-        xs = xs.at[0].set(x)
+        # xs = jnp.zeros((self.num_blocks+1, B, T, C), dtype=self.dtype)
+        xs = [x]
+        # alphas = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
+        # mus = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
+        # xs = xs.at[0].set(x)
+        alphas = []
+        mus = []
 
         tot_logdet = 0.0
-        i = 0
         for block in self.blocks:
             rng, rng_used = safe_split(rng)
             x, logdet, alpha, mu = block.forward(x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
-            alphas = alphas.at[i].set(alpha)
-            mus = mus.at[i].set(mu)
-            i += 1
-            xs = xs.at[i].set(x)
+            # alphas = alphas.at[i].set(alpha)
+            # mus = mus.at[i].set(mu)
+            alphas.append(alpha)
+            mus.append(mu)
+            # xs = xs.at[i].set(x)
+            xs.append(x)
             tot_logdet = tot_logdet + logdet
             del rng_used
+
+        xs = jnp.stack(xs, axis=0)
+        alphas = jnp.stack(alphas, axis=0)
+        mus = jnp.stack(mus, axis=0)
+
+        assert xs.shape == (self.num_blocks+1, B, T, C)
+        assert alphas.shape == (self.num_blocks, B, T, C)
+        assert mus.shape == (self.num_blocks, B, T, C)
         
         log_prior = 0.5 * (x ** 2).mean() * (self.prior_norm ** -2.0)
         
@@ -726,6 +738,7 @@ class TeacherStudent(nn.Module):
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
+        assert self.mode == REV_ORDER_L2_EACH_BLOCK
         self.teacher = NormalizingFlow(
             img_size=self.img_size,
             out_channels=self.out_channels,
@@ -796,14 +809,17 @@ class TeacherStudent(nn.Module):
         return x
     
     def calc_student_reverse(self, x, y, temp: float = 1.0, which_cache: str = 'cond', train: bool = False):
+        raise LookupError("not used for now")
         _, _, z = self.student.reverse(x, y, temp=temp, which_cache=which_cache, train=train)
         return z
     
     def calc_student_forward(self, x, y, temp: float = 1.0, which_cache: str = 'cond', train: bool = False):
+        raise LookupError("not used for now")
         _, _, zs, _, _ = self.student(x, y, temp=temp, which_cache=which_cache, train=train)
         return zs[-1]
     
     def calc_teacher_forward(self, x, y, temp: float = 1.0, which_cache: str = 'cond', train: bool = True):
+        # used for denoise. The loss here is logp.
         loss, _, _, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=train)
         return loss
     
@@ -815,85 +831,45 @@ class TeacherStudent(nn.Module):
                 which_cache: str = 'cond', 
                 train: bool = True,
         ):
+        """
+        Student Train step.
+        """
         
         rng = self.make_rng('dropout')
         rng, rng_used = safe_split(rng)
         rng, rng_used_2 = safe_split(rng)
-        rng, rng_used_3 = safe_split(rng)
-                
+        
+        # generate zs by teacher, from dataset images
         loss_1, loss_dict_1, zs, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=False, rng=rng_used)
         del rng_used
         loss_dict = {}
-        
-        if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-            raise NotImplementedError("SAME_ORDER_L2_EACH_BLOCK and SAME_ORDER_L2_MA_EACH_BLOCK are not implemented")
-            zs = jax.lax.stop_gradient(zs)
-            alphas_t = jax.lax.stop_gradient(alphas_t)
-            mus_t = jax.lax.stop_gradient(mus_t)
 
-            loss_2, loss_dict_2, zs_s, alphas_s, mus_s = self.student(x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2)
-            xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_3)
-            
-            loss_dict = {
-                'loss_student': loss_2,
-                'loss_student_prior': loss_dict_2['log_prior'],
-                'loss_student_logdet': loss_dict_2['log_det'],
-            }
-            
-            if self.mode == SAME_ORDER_L2_EACH_BLOCK:
-                losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
-                loss = jnp.sum(losses)
-                
-                losses = losses.reshape(2, -1)
-                block_losses = jnp.sum(losses, axis=1)
-                loss_dict["front_distill_loss"] = block_losses[0]
-                loss_dict["back_distill_loss"] = block_losses[1]
-            
-            if self.mode == SAME_ORDER_L2_MA_EACH_BLOCK:
-                loss_alpha = jnp.mean((alphas - alphas_t) ** 2, axis=(1, 2, 3))
-                loss_alpha = jnp.sum(loss_alpha)
-                loss_mu = jnp.mean((mus - mus_t) ** 2, axis=(1, 2, 3))
-                loss_mu = jnp.sum(loss_mu)
-                loss = loss_mu + loss_alpha
-                loss_dict["loss_mu"] = loss_mu
-                loss_dict["loss_alpha"] = loss_alpha
+        # only implement REVERSE L2
+        # here, the zs is from image to latent, num_blocks+1 z in total.
+        zs = jax.lax.stop_gradient(zs)
+        zs = jnp.flip(zs, axis=0) # flip to latent to image
         
-        elif self.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-            zs = jax.lax.stop_gradient(zs)
-            zs = jnp.flip(zs, axis=0)
+        # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
+        xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
+        
+        if self.mode == REV_ORDER_L2_EACH_BLOCK:
+            losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
+            norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
+            norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
+            norm_x = jax.lax.stop_gradient(norm_x)
+            norm_z = jax.lax.stop_gradient(norm_z)
             
-            # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_3)
-            xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_3)
-            
-            if self.mode == REV_ORDER_L2_MA_EACH_BLOCK:
-                raise NotImplementedError("REV_ORDER_L2_MA_EACH_BLOCK is not encouraged by Kaiming")
-                loss_alpha = jnp.mean((alphas - alphas_t) ** 2, axis=(1, 2, 3))
-                loss_alpha = jnp.sum(loss_alpha)
-                loss_mu = jnp.mean((mus - mus_t) ** 2, axis=(1, 2, 3))
-                loss_mu = jnp.sum(loss_mu)
+            # block 0 means first noise to image
+            for i in range(len(losses)):
+                loss_dict[f"block_{i}"] = losses[i]
+            for i in range(len(norm_x)):
+                loss_dict[f"norm_x_{i}"] = norm_x[i]
+            for i in range(len(norm_z)):
+                loss_dict[f"norm_z_{i}"] = norm_z[i]
                 
-                loss = loss_alpha + loss_mu
-                loss_dict['loss_mu'] = loss_mu
-                loss_dict['loss_alpha'] = loss_alpha
-            
-            if self.mode == REV_ORDER_L2_EACH_BLOCK:
-                losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
-                norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
-                norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
-                norm_x = jax.lax.stop_gradient(norm_x)
-                norm_z = jax.lax.stop_gradient(norm_z)
-                
-                # block 0 means first noise to image
-                for i in range(len(losses)):
-                    loss_dict[f"block_{i}"] = losses[i]
-                for i in range(len(norm_x)):
-                    loss_dict[f"norm_x_{i}"] = norm_x[i]
-                for i in range(len(norm_z)):
-                    loss_dict[f"norm_z_{i}"] = norm_z[i]
-                    
-                # losses /= (norm_x + norm_z)
-                # losses *= jnp.mean(norm_x + norm_z)
-                loss = jnp.sum(losses)
+            # losses /= (norm_x + norm_z)
+            # losses *= jnp.mean(norm_x + norm_z)
+            loss = jnp.sum(losses)
             
         loss_dict['loss'] = loss
         
