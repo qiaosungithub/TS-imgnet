@@ -593,20 +593,25 @@ class NormalizingFlow(nn.Module):
                 train: bool = True,
                 rng = None,
         ):
-            # used for student traning.
-            # assert N == self.num_blocks
+            """
+            used for student traning.
+            input: x, the output of teacher (latent)
+            Return: a sequence of output of student, from latent to image
+            """
             B, T, C = x.shape
             
-            zs = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
+            zs = []
             current_x = x
             
             for i in range(self.num_blocks):
                 rng, rng_used = safe_split(rng)
                 next_x, _, _, _ = self.blocks[i].forward(current_x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
-                zs = zs.at[i].set(next_x)
-                current_x = jax.lax.stop_gradient(next_x)
+                zs.append(next_x)
+                current_x = jax.lax.stop_gradient(next_x) # stop grad before feeding into next block. TODO: try to remove this.
                 del rng_used
-            
+
+            zs = jnp.stack(zs, axis=0)
+            assert zs.shape == (self.num_blocks, B, T, C), f"zs shape: {zs.shape}, {B}, {T}, {C}"
             return zs
     
     def forward_flatten(self, 
@@ -851,25 +856,26 @@ class TeacherStudent(nn.Module):
         
         # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
         xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
+        # xs: from latent (not contained) to image
         
-        if self.mode == REV_ORDER_L2_EACH_BLOCK:
-            losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
-            norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
-            norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
-            norm_x = jax.lax.stop_gradient(norm_x)
-            norm_z = jax.lax.stop_gradient(norm_z)
+        assert self.mode == REV_ORDER_L2_EACH_BLOCK
+        losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
+        norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
+        norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
+        norm_x = jax.lax.stop_gradient(norm_x)
+        norm_z = jax.lax.stop_gradient(norm_z)
+        
+        # this order is latent to image
+        for i in range(len(losses)):
+            loss_dict[f"block_{i}"] = losses[i]
+        for i in range(len(norm_x)): # student
+            loss_dict[f"norm_x_{i}"] = norm_x[i]
+        for i in range(len(norm_z)): # teacher
+            loss_dict[f"norm_z_{i}"] = norm_z[i]
             
-            # block 0 means first noise to image
-            for i in range(len(losses)):
-                loss_dict[f"block_{i}"] = losses[i]
-            for i in range(len(norm_x)):
-                loss_dict[f"norm_x_{i}"] = norm_x[i]
-            for i in range(len(norm_z)):
-                loss_dict[f"norm_z_{i}"] = norm_z[i]
-                
-            # losses /= (norm_x + norm_z)
-            # losses *= jnp.mean(norm_x + norm_z)
-            loss = jnp.sum(losses)
+        # losses /= (norm_x + norm_z)
+        # losses *= jnp.mean(norm_x + norm_z)
+        loss = jnp.sum(losses)
             
         loss_dict['loss'] = loss
         
