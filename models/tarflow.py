@@ -495,9 +495,9 @@ class NormalizingFlow(nn.Module):
     num_layers: int
     num_heads: int
     num_blocks: int
-    # permutation: PermutationFlip = PermutationFlip()
+    reverse_perm: int = 0 # whether we should reverse the order of perms
     num_classes: int = 0
-    teacher_nblocks: int = None
+    # teacher_nblocks: int = None
     load_pretrain_method: str = "skip"
     dtype: Any = jnp.float32
     dropout: float = 0.0
@@ -512,12 +512,12 @@ class NormalizingFlow(nn.Module):
         self.in_channels = self.out_channels * self.patch_size * self.patch_size
         assert self.patch_size * patch_num == self.img_size, "img_size must be divisible by num_patches"
         
-        judge = lambda idx: idx % 2 == 1
+        judge = lambda idx: (idx + self.reverse_perm) % 2 == 1
         
-        if self.teacher_nblocks is not None:
-            log_for_0(f"teacher_nblocks: {self.teacher_nblocks}")
-            map_fn = get_map_fn(self.load_pretrain_method, self.teacher_nblocks, self.num_blocks)
-            judge = lambda idx: map_fn(idx) % 2 == 1
+        # if self.teacher_nblocks is not None:
+        #     log_for_0(f"teacher_nblocks: {self.teacher_nblocks}")
+        #     map_fn = get_map_fn(self.load_pretrain_method, self.teacher_nblocks, self.num_blocks)
+        #     judge = lambda idx: map_fn(idx) % 2 == 1
         
         log_for_0(f"judge result: {[judge(i) for i in range(self.num_blocks)]}")
         self.blocks = [
@@ -759,42 +759,23 @@ class TeacherStudent(nn.Module):
             debug=self.debug,
             prior_norm=self.prior_norm,
         )
-        if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-            raise NotImplementedError("SAME_ORDER_L2_EACH_BLOCK and SAME_ORDER_L2_MA_EACH_BLOCK are not implemented")
-            self.student = NormalizingFlow(
-                img_size=self.img_size,
-                out_channels=self.out_channels,
-                channels=self.channels,
-                patch_size=self.patch_size,
-                num_layers=int(self.num_layers),
-                num_heads=self.num_heads,
-                num_blocks=self.num_blocks,
-                perms=self.perms,
-                num_classes=self.num_classes,
-                dtype=self.dtype,
-                dropout=self.student_dropout,
-                mode=self.mode,
-                debug=self.debug,
-            )
-        elif self.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-            self.student = NormalizingFlow(
-                img_size=self.img_size,
-                out_channels=self.out_channels,
-                channels=self.channels,
-                patch_size=self.patch_size,
-                num_layers=int(self.num_layers),
-                num_heads=self.num_heads,
-                num_blocks=self.num_blocks,
-                # perms=self.perms[::-1],
-                num_classes=self.num_classes,
-                dtype=self.dtype,
-                dropout=self.student_dropout,
-                mode=self.mode,
-                debug=self.debug,
-                prior_norm=self.prior_norm,
-            )
-        else:
-            raise ValueError(f"Unknown mode: {self.mode}")
+        # the order of student is: first block corresponds to noise end. It is reverse of teacher.
+        self.student = NormalizingFlow(
+            img_size=self.img_size,
+            out_channels=self.out_channels,
+            channels=self.channels,
+            patch_size=self.patch_size,
+            num_layers=int(self.num_layers),
+            num_heads=self.num_heads,
+            num_blocks=self.num_blocks,
+            reverse_perm=self.num_blocks-1,
+            num_classes=self.num_classes,
+            dtype=self.dtype,
+            dropout=self.student_dropout,
+            mode=self.mode,
+            debug=self.debug,
+            prior_norm=self.prior_norm,
+        )
         
     def patchify(self, x):
         B, H, W, C = x.shape
@@ -890,10 +871,10 @@ def reverse(params,
             guidance: float = 0,
             which_cache: str = 'cond',
             train: bool = False):
-    # x = self.patchify(x)
-    # for block in nf.blocks[::-1]:
-    print('param keys:', params['params'].keys())
-    # for block_param in params['params']['blocks'][::-1]:
+    """
+    used for teacher generation.
+    """
+    # print('param keys:', params['params'].keys())
     patch_num = nf.img_size // nf.patch_size
     num_patches = patch_num ** 2
     in_channels = nf.out_channels * nf.patch_size * nf.patch_size
@@ -924,46 +905,33 @@ def reverse_student(params,
             which_cache: str = 'cond',
             train: bool = False):
     print('param keys:', params['params'].keys())
-    # for block_param in params['params']['blocks'][::-1]:
     patch_num = nf.img_size // nf.patch_size
     num_patches = patch_num ** 2
     in_channels = nf.out_channels * nf.patch_size * nf.patch_size
-    if nf.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-        raise NotImplementedError("SAME_ORDER_L2_EACH_BLOCK and SAME_ORDER_L2_MA_EACH_BLOCK are not implemented")
-        for i in range(nf.num_blocks-1,-1,-1):
-            block_param = params['params']['student'][f'blocks_{i}']
-            x = reverse_block({"params": block_param}, MetaBlock(
-                    in_channels=in_channels, 
-                    channels=nf.channels, 
-                    num_patches=num_patches, 
-                    num_layers=int(nf.num_layers), 
-                    num_heads=nf.num_heads, 
-                    num_classes=nf.num_classes, 
-                    permutation=nf.perms[i],
-                    debug=nf.debug,
-                ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
-    elif nf.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-        for i in range(nf.num_blocks):
-            block_param = params['params']['student'][f'blocks_{i}']
-            x = reverse_block_student({"params": block_param}, MetaBlock(
-                    in_channels=in_channels, 
-                    channels=nf.channels, 
-                    num_patches=num_patches, 
-                    num_layers=int(nf.num_layers), 
-                    num_heads=nf.num_heads, 
-                    num_classes=nf.num_classes, 
-                    permutation=PermutationFlip((nf.num_blocks-1-i)%2==1),
-                    mode=nf.mode,
-                    debug=nf.debug,
-                ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
+    assert nf.mode == REV_ORDER_L2_EACH_BLOCK, f"only support REV_ORDER_L2_EACH_BLOCK, but got {nf.mode}"
+    # start loop. The order of student is the first block corresponds to noise end. It is reverse of teacher.
+    for i in range(nf.num_blocks):
+        block_param = params['params']['student'][f'blocks_{i}']
+        x = reverse_block_student({"params": block_param}, MetaBlock(
+                in_channels=in_channels, 
+                channels=nf.channels, 
+                num_patches=num_patches, 
+                num_layers=int(nf.num_layers), 
+                num_heads=nf.num_heads, 
+                num_classes=nf.num_classes, 
+                permutation=PermutationFlip((nf.num_blocks-1-i)%2==1),
+                mode=nf.mode,
+                debug=nf.debug,
+            ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
         # print("mean during layer:", x.mean())
     x = nf.unpatchify(x)
     return x
 
 # move this out from model for JAX compilation
-def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True, denoise=True):
+def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True, denoise=True, use_student=False):
     """
-    Generate samples from the model
+    Generate samples from the model.
+    used for teacher generation.
     """
     patch_num = model.img_size // model.patch_size
     num_patches = patch_num ** 2
@@ -972,15 +940,17 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
     rng_used, rng = jax.random.split(rng, 2)
     rng_used_2, rng = jax.random.split(rng, 2)
     z = jax.random.normal(rng_used, x_shape, dtype=model.dtype) * model.prior_norm
+
     if label_cond:
         y = jax.random.randint(rng_used_2, (n_sample,), 0, model.num_classes)
     else:
         y = None
     
+    rev_fn = reverse_student if use_student else reverse
     if label_cond:
-        x = reverse(params, model, z, y, guidance=guidance, temp=1.0)
+        x = rev_fn(params, model, z, y, guidance=guidance, temp=1.0)
     else:
-        x = reverse(params, model, z, y, guidance=guidance, temp=temperature)
+        x = rev_fn(params, model, z, y, guidance=guidance, temp=temperature)
     
     if noise_level == 0 or not denoise: return x
     def nabla_log_prob(x):
@@ -988,49 +958,10 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
         return loss
     
     nabla_log_prob = jax.grad(nabla_log_prob)
-    grad_dir = nabla_log_prob(x) * jnp.prod(jnp.array(x.shape))
+    grad_dir = nabla_log_prob(x) * jnp.prod(jnp.array(x.shape)) # because the loss is mean by teacher forward.
     
     x = x - (noise_level ** 2) * grad_dir # use score-based model to denoise
     
-    return x
-
-def generate_student(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True, mult_prior=1.0, denoise=True):
-    """
-    Generate samples from the model.
-    Here we only support mult_prior=1.0 for now.
-    """
-    patch_num = model.img_size // model.patch_size
-    num_patches = patch_num ** 2
-    in_channels = model.out_channels * model.patch_size * model.patch_size
-    x_shape = (n_sample, num_patches, in_channels)
-    rng_used, rng = jax.random.split(rng, 2)
-    rng_used_2, rng = jax.random.split(rng, 2)
-    z = jax.random.normal(rng_used, x_shape, dtype=model.dtype)
-    
-    z *= mult_prior
-    
-    if label_cond:
-        y = jax.random.randint(rng_used_2, (n_sample,), 0, model.num_classes)
-    else:
-        y = None
-    
-    if label_cond:
-        x = reverse_student(params, model, z, y, guidance=guidance, temp=1.0)
-    else:
-        x = reverse_student(params, model, z, y, guidance=guidance, temp=temperature)
-        
-    # denoising
-    def nabla_log_prob(x):
-        loss = model.apply(params, x, y, method=model.calc_teacher_forward) # note that I use teacher here.
-        # TODO: impl. student score model
-        return loss
-    
-    if denoise:
-        nabla_log_prob = jax.grad(nabla_log_prob)
-        grad_dir = nabla_log_prob(x) * jnp.prod(jnp.array(x.shape))
-        
-        x = x - (noise_level ** 2) * grad_dir # use score-based model to denoise
-        
     return x
 
 def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True):

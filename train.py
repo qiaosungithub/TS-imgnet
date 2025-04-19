@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import input_pipeline
 from input_pipeline import prepare_batch_data
 import models.tarflow as tarflow
-from models.tarflow import TeacherStudent, generate_student, generate, edm_ema_scales_schedules, generate_prior
+from models.tarflow import TeacherStudent, generate, edm_ema_scales_schedules, generate_prior
 from utils.vae_util import LatentManager
 from utils.info_util import print_params
 from utils.vis_util import make_grid_visualization, float_to_uint8
@@ -257,8 +257,7 @@ def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_le
         x_all = x_all.reshape(-1, *x_all.shape[2:])
         return z_all
     
-    generate_fn = generate_student if student else generate
-    images = generate_fn(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, noise_level=noise_level, temperature=temperature, label_cond=label_cond)
+    images = generate(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, noise_level=noise_level, temperature=temperature, label_cond=label_cond, use_student=student)
     images = images.transpose((0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
     assert images.shape == (device_batch_size, 4, 32, 32)
     images_all = lax.all_gather(images, axis_name="batch")  # each device has a copy
