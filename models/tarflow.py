@@ -985,6 +985,7 @@ def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, gu
     
     z = model.apply(params, x, method=model.patchify)
     
+    # student. from block n-1 to 0.
     for i in range(model.num_blocks-1,-1,-1):
         block_param = params['params']['student'][f'blocks_{i}']
         z = reverse_block({"params": block_param}, MetaBlock(

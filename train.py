@@ -612,8 +612,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=False)
             vis = jax.device_get(vis)
             vis = float_to_uint8(vis)
-            # vis = make_grid_visualization(vis)
-            # logger.log_image(step + 1, {"vis_sample": vis[0]})
             for i in range(7):
                 logger.log_image(step + 1, {f"vis_sample_{i}": vis[i]})
             vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=True)
