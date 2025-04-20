@@ -2,7 +2,7 @@ training:
     num_epochs: 320
     warmup_epochs: 20
     batch_size: 1024
-    learning_rate: 0.0008
+    learning_rate: 0.0004
     eval_per_epoch: 20
     visualize_per_epoch: 20
     log_per_step: 100
@@ -50,4 +50,4 @@ load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250411_151
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "sqa sanity check"
+wandb_notes: "sqa sanity check, lr 4e-4"
