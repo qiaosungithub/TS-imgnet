@@ -17,15 +17,6 @@ def safe_split(rng):
 ModuleDef = Any
 print = lambda *args, **kwargs : None
 
-### TEACHER STUDENT MODE ###
-# T and S are in the same order (T fixed); apply L2 loss (on z) on each block separately.
-SAME_ORDER_L2_EACH_BLOCK = 0 
-# T and S are in the same order (T fixed); apply L2 loss (on mu and alpha) on each block separately.
-SAME_ORDER_L2_MA_EACH_BLOCK = 1 
-# T and S are in reverse order (T fixed); apply L2 loss (on z) on each block separately.
-REV_ORDER_L2_EACH_BLOCK = 2
-# T and S are in reverse order (T fixed); apply L2 loss (on mu and alpha) on each block separately.
-REV_ORDER_L2_MA_EACH_BLOCK = 3
 ############################
 
 def get_map_fn(map_method, teacher_nblocks, self_nblocks):
@@ -215,7 +206,7 @@ class MetaBlock(nn.Module):
     permutation: PermutationFlip
     dropout: float = 0.0
     debug: bool = False
-    mode: int = SAME_ORDER_L2_EACH_BLOCK
+    mode: str = "same" # options: same, reverse
 
     dtype: Any = jnp.float32
     
@@ -307,8 +298,13 @@ class MetaBlock(nn.Module):
         x = self.proj_out(x) # [B, T, 2*C]
         x = jnp.concatenate([jnp.zeros_like(x[:, :1]), x[:, :-1]], axis=1)
         alpha, mu = jnp.split(x, 2, axis=-1)
-        x_new = x_in * jnp.exp(alpha) + mu
-        log_jacob = alpha.mean(axis=(1, 2))
+        if self.mode == "same":
+            x_new = (x_in - mu) * jnp.exp(-alpha) # [B, T, C_in]
+            log_jacob = - alpha.mean(axis=(1, 2))
+        elif self.mode == "reverse":
+            x_new = x_in * jnp.exp(alpha) + mu
+            log_jacob = alpha.mean(axis=(1, 2))
+        else: raise NotImplementedError(f"Unknown mode: {self.mode}")
         x_new = self.permutation(x_new, inverse=True)
         return x_new, log_jacob, alpha, mu
 
@@ -445,7 +441,12 @@ def reverse_block(
         
         x_sliced = jax.lax.dynamic_slice(x_step, (0, i+1, 0), (x_step.shape[0], 1, x_step.shape[2]))
         assert x_sliced.shape == (B, 1, C)
-        val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
+        if block.mode == "same":
+            val = x_sliced * jnp.exp(alpha_i.astype(jnp.float32)) + mu_i
+        elif block.mode == "reverse":
+            val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
+        else:
+            raise ValueError(f"Unknown mode: {block.mode}")
         x_step = jax.lax.dynamic_update_slice(x_step, val, (0, i+1, 0))
         return x_step, k_cache_step, v_cache_step
     
@@ -485,7 +486,7 @@ class NormalizingFlow(nn.Module):
     load_pretrain_method: str = "skip"
     dtype: Any = jnp.float32
     dropout: float = 0.0
-    mode: int = SAME_ORDER_L2_EACH_BLOCK
+    mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
     
@@ -716,13 +717,13 @@ class TeacherStudent(nn.Module):
     dtype: Any = jnp.float32
     teacher_dropout: float = 0.0
     student_dropout: float = 0.0
-    mode: int = SAME_ORDER_L2_EACH_BLOCK
+    mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
-        assert self.mode == REV_ORDER_L2_EACH_BLOCK
+        assert self.mode == "reverse"
         self.teacher = NormalizingFlow(
             img_size=self.img_size,
             out_channels=self.out_channels,
@@ -818,7 +819,6 @@ class TeacherStudent(nn.Module):
         xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
         
-        assert self.mode == REV_ORDER_L2_EACH_BLOCK
         losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
         norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
@@ -887,7 +887,7 @@ def reverse_student(params,
     patch_num = nf.img_size // nf.patch_size
     num_patches = patch_num ** 2
     in_channels = nf.out_channels * nf.patch_size * nf.patch_size
-    assert nf.mode == REV_ORDER_L2_EACH_BLOCK, f"only support REV_ORDER_L2_EACH_BLOCK, but got {nf.mode}"
+    assert nf.mode == "reverse", f"only support reverse, but got {nf.mode}"
     # start loop. The order of student is the first block corresponds to noise end. It is reverse of teacher.
     for i in range(nf.num_blocks):
         block_param = params['params']['student'][f'blocks_{i}']
@@ -1041,7 +1041,7 @@ NF_Default = partial(
 )
 
 TSNF_Small_p2_b8_l8 = partial(
-    TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, mode=REV_ORDER_L2_EACH_BLOCK
+    TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, mode="reverse",
 )
 
 if __name__== "__main__":
