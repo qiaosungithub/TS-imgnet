@@ -80,6 +80,7 @@ class PermutationFlip:
         self.flip = flip
 
     def __call__(self, x: jnp.ndarray, inverse: bool = False):
+        # inverse: legacy, not used.
         if self.flip:
             x = jnp.flip(x, axis=1)
         return x
@@ -244,9 +245,9 @@ class MetaBlock(nn.Module):
                         which_cache: str = 'cond',
                         train: bool = True,
                         rng = None):
-        # for student use
+        raise DeprecationWarning
+        # for student use. image only forward. The input has been permuted.
         x_proj = self.proj_in(x)
-        # permutation = PermutationConfig.from_dict(self.permutation).build_permutation()
         pos_embed = self.permutation(self.pos_emebdding)
         x_proj = x_proj + pos_embed
         if self.class_embedding is not None:
@@ -264,11 +265,9 @@ class MetaBlock(nn.Module):
             
         x_proj = self.proj_out(x_proj) # [B, T, 2*C]
         x_proj = jnp.concatenate([jnp.zeros_like(x_proj[:, :1]), x_proj[:, :-1]], axis=1)
-        alpha, mu = jnp.split(x_proj, 2, axis=-1)
-        if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-            x_new = (x - mu) * jnp.exp(-alpha) # [B, T, C_in]
-        elif self.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-            x_new = x * jnp.exp(alpha) + mu
+        alpha, mu = jnp.split(x_proj, 2, axis=-1) 
+        assert self.mode == REV_ORDER_L2_EACH_BLOCK
+        x_new = x * jnp.exp(alpha) + mu
         return x_new
         
     def forward(self, 
@@ -285,11 +284,12 @@ class MetaBlock(nn.Module):
             temp: scalar
             which_cache: str
             train: bool
+        forward with mu, alpha, jacobian. The input will be permuted in this function.
+        foward: *exp(alpha) + mu
         """
         x_in = self.permutation(x)
         x = self.proj_in(x_in)
-        x = x + self.permutation(self.pos_emebdding)
-        # x = self.permutation(x) # [B, T, C]
+        x = x + self.permutation(self.pos_emebdding) # [B, T, C]
         
         if self.class_embedding is not None:
             if y is not None:
@@ -307,12 +307,8 @@ class MetaBlock(nn.Module):
         x = self.proj_out(x) # [B, T, 2*C]
         x = jnp.concatenate([jnp.zeros_like(x[:, :1]), x[:, :-1]], axis=1)
         alpha, mu = jnp.split(x, 2, axis=-1)
-        if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-            x_new = (x_in - mu) * jnp.exp(-alpha) # [B, T, C_in]
-            log_jacob = - alpha.mean(axis=(1, 2))
-        elif self.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-            x_new = x_in * jnp.exp(alpha) + mu
-            log_jacob = alpha.mean(axis=(1, 2))
+        x_new = x_in * jnp.exp(alpha) + mu
+        log_jacob = alpha.mean(axis=(1, 2))
         x_new = self.permutation(x_new, inverse=True)
         return x_new, log_jacob, alpha, mu
 
@@ -367,12 +363,15 @@ class MetaBlock(nn.Module):
         which_cache: str = 'cond',
         train: bool = False,
     ):
+        """
+        reverse: (x-mu) * exp(-alpha)
+        """
+        raise LookupError("没用到？")
         x = self.permutation(x)
         B, T, C = x.shape
         num_heads = self.num_heads
         head_dim = self.channels // num_heads
         k_cache, v_cache = [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), "idx": 0} for _ in range(self.num_layers)], [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), "idx": 0} for _ in range(self.num_layers)]
-        
         
         def step_fn(i, vals):
             x_step, log_jacob, k_cache_step, v_cache_step = vals
@@ -383,14 +382,9 @@ class MetaBlock(nn.Module):
             
             x_sliced = jax.lax.dynamic_slice(x_step, (0, (i+1), 0), (x_step.shape[0], 1, x_step.shape[2]))
             assert x_sliced.shape == (B, 1, C)
-            if self.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-                val = x_sliced * jnp.exp(alpha_i.astype(jnp.float32)) + mu_i
-                log_jacob += alpha_i.mean(axis=(1, 2))
-            elif self.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-                val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
-                log_jacob -= alpha_i.mean(axis=(1, 2))
-            else:
-                raise ValueError(f"Unknown mode: {self.mode}")
+            assert self.mode == REV_ORDER_L2_EACH_BLOCK
+            val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
+            log_jacob -= alpha_i.mean(axis=(1, 2))
             x_step = jax.lax.dynamic_update_slice(x_step, val, (0, (i+1), 0))
             return x_step, log_jacob, k_cache_step, v_cache_step
         
@@ -427,6 +421,7 @@ def reverse_block(
         temp: scalar
         which_cache: str
         train: bool
+    reverse: (x-mu) * exp(-alpha)
     """
     x = block.permutation(x)
     B, T, C = x.shape
@@ -440,21 +435,17 @@ def reverse_block(
         x_step, k_cache_step, v_cache_step = vals
         for obj in k_cache_step + v_cache_step:
             obj["idx"] = i
-        alpha_i_cond, mu_i_cond, k_cache_step, v_cache_step = block.apply(params, x_step, i, y, k_cache_step, v_cache_step, temp, "cond", train, method=block.reverse_step)
+        alpha_i, mu_i, k_cache_step, v_cache_step = block.apply(params, x_step, i, y, k_cache_step, v_cache_step, temp, "cond", train, method=block.reverse_step)
         
-        alpha_i_uncond, mu_i_uncond, k_cache_step, v_cache_step = block.apply(params, x_step, i, None, k_cache_step, v_cache_step, temp, "uncond", train, method=block.reverse_step)
-        
-        alpha_i = (1 + guidance * i / (T - 1)) * alpha_i_cond - guidance * i / (T - 1) * alpha_i_uncond
-        mu_i = (1 + guidance * i / (T - 1)) * mu_i_cond - guidance * i / (T - 1) * mu_i_uncond
+        if guidance > 0:
+            alpha_i_uncond, mu_i_uncond, k_cache_step, v_cache_step = block.apply(params, x_step, i, None, k_cache_step, v_cache_step, temp, "uncond", train, method=block.reverse_step)
+            
+            alpha_i = (1 + guidance * i / (T - 1)) * alpha_i - guidance * i / (T - 1) * alpha_i_uncond
+            mu_i = (1 + guidance * i / (T - 1)) * mu_i - guidance * i / (T - 1) * mu_i_uncond
         
         x_sliced = jax.lax.dynamic_slice(x_step, (0, i+1, 0), (x_step.shape[0], 1, x_step.shape[2]))
         assert x_sliced.shape == (B, 1, C)
-        if block.mode in [SAME_ORDER_L2_EACH_BLOCK, SAME_ORDER_L2_MA_EACH_BLOCK]:
-            val = x_sliced * jnp.exp(alpha_i.astype(jnp.float32)) + mu_i
-        elif block.mode in [REV_ORDER_L2_EACH_BLOCK, REV_ORDER_L2_MA_EACH_BLOCK]:
-            val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
-        else:
-            raise ValueError(f"Unknown mode: {block.mode}")
+        val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
         x_step = jax.lax.dynamic_update_slice(x_step, val, (0, i+1, 0))
         return x_step, k_cache_step, v_cache_step
     
@@ -471,19 +462,12 @@ def reverse_block_student(
     guidance: float = 0,
     train: bool = False):
     
-    x = block.permutation(x)
-    B, T, C = x.shape
-    num_heads = block.num_heads
-    # head_dim = block.channels // num_heads
+    x_out, _, _, _ = block.apply(params, x, y, temp, which_cache, train, method=block.forward)
+    if guidance > 0:
+        x_uncond, _, _, _ = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
+        x_out = (1 + guidance) * x_out - guidance * x_uncond # simple guidance.
     
-    assert T == block.num_patches
-    
-    x_cond = block.apply(params, x, y, temp, which_cache, train, method=block.forward_flatten)
-    x_uncond = block.apply(params, x, None, temp, which_cache, train, method=block.forward_flatten)
-    
-    x = (1 + guidance) * x_cond - guidance * x_uncond # simple guidance. TODO: more complex?
-    
-    return block.permutation(x, inverse=True)
+    return x_out
 
 class NormalizingFlow(nn.Module):
     """Normalizing flow."""
@@ -622,6 +606,7 @@ class NormalizingFlow(nn.Module):
                 train: bool = True,
                 rng = None,
         ):
+            raise LookupError("没用到？")
             B, T, C = x.shape
             xs = jnp.zeros((self.num_blocks+1, B, T, C), dtype=self.dtype)
             alphas = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
@@ -653,6 +638,7 @@ class NormalizingFlow(nn.Module):
                 which_cache: str = 'cond',
                 train: bool = False,
         ):
+        raise LookupError("没用到？")
         x = self.patchify(x)
         tot_log_jacob = 0.0
         for i in range(self.num_blocks-1,-1,-1):
@@ -683,11 +669,7 @@ class NormalizingFlow(nn.Module):
         # total_x = [x]
         x = self.patchify(x)  # [B, T, C]
         B, T, C = x.shape
-        # xs = jnp.zeros((self.num_blocks+1, B, T, C), dtype=self.dtype)
         xs = [x]
-        # alphas = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
-        # mus = jnp.zeros((self.num_blocks, B, T, C), dtype=self.dtype)
-        # xs = xs.at[0].set(x)
         alphas = []
         mus = []
 
@@ -695,11 +677,8 @@ class NormalizingFlow(nn.Module):
         for block in self.blocks:
             rng, rng_used = safe_split(rng)
             x, logdet, alpha, mu = block.forward(x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
-            # alphas = alphas.at[i].set(alpha)
-            # mus = mus.at[i].set(mu)
             alphas.append(alpha)
             mus.append(mu)
-            # xs = xs.at[i].set(x)
             xs.append(x)
             tot_logdet = tot_logdet + logdet
             del rng_used

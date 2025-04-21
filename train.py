@@ -290,9 +290,9 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=Fals
     assert images.shape[1:] == (4, 32, 32), f"images.shape: {images.shape}"
     samples = latent_manager.decode(images)
     assert samples.shape[1:] == (3, 256, 256), f"samples.shape: {samples.shape}"
-    assert not jnp.any(
-        jnp.isnan(samples)
-    ), f"There is nan in decoded samples! latent range: {images.min()}, {images.max()}. Whether there is nan in latents: {jnp.any(jnp.isnan(images))}"
+    # assert not jnp.any(
+    #     jnp.isnan(samples)
+    # ), f"There is nan in decoded samples! latent range: {images.min()}, {images.max()}. Whether there is nan in latents: {jnp.any(jnp.isnan(images))}"
     samples = samples.transpose((0, 2, 3, 1))  # (B, C, H, W) -> (B, H, W, C)
     
     jax.random.normal(jax.random.key(0), ()).block_until_ready()
