@@ -317,7 +317,8 @@ class MetaBlock(nn.Module):
         v_cache: dict | None = None,
         temp: float = 1.0, 
         which_cache: str = 'cond', 
-        train: bool = False):
+        train: bool = False,
+    ):
         # NOTE: train=True is not supported
         """
         Args:
@@ -427,6 +428,7 @@ def reverse_block(
     
     assert T == block.num_patches
     
+    # loop over num_tokens.
     def step_fn(i, vals):
         x_step, k_cache_step, v_cache_step = vals
         for obj in k_cache_step + v_cache_step:
