@@ -111,6 +111,7 @@ def get_config():
     config.load_from = ""
     config.pretrain = ""
     config.just_evaluate = False
+    config.eval_teacher = False
     config.just_prior = False
     config.save_by_fid = False
     config.wandb_name = None

@@ -48,7 +48,7 @@ class InceptionV3(nn.Module):
         if self.pretrained:
             ckpt_file = utils.download(self.ckpt_path)
             self.params_dict = pickle.load(open(ckpt_file, "rb"))
-            self.num_classes_ = 1000
+            self.num_classes_ = 1008
         else:
             self.params_dict = None
             self.num_classes_ = self.num_classes
@@ -157,19 +157,37 @@ class InceptionV3(nn.Module):
             params_dict=utils.get(self.params_dict, "Mixed_7c"),
             dtype=self.dtype,
         )(x, train)
-        x = jnp.mean(x, axis=(1, 2), keepdims=True)
-        if not self.include_head:
-            return x
-        x = nn.Dropout(rate=0.5)(x, deterministic=not train, rng=rng)
+        x = jnp.mean(x, axis=(1, 2), keepdims=True) # average pooling
+        # x.shape: (B, 1, 1, 2048)
+        # if not self.include_head:
+            # return x
+        x_wo_head = x
+        # x = nn.Dropout(rate=0.5)(x, deterministic=not train, rng=rng)
         x = jnp.reshape(x, newshape=(x.shape[0], -1))
-        x = Dense(
+        assert x.shape == (x.shape[0], 2048), x.shape
+        fc_param = utils.get(self.params_dict, "fc")
+        assert fc_param is not None, "fc_param is None"
+        unbiased_x = Dense(
             features=self.num_classes_,
-            params_dict=utils.get(self.params_dict, "fc"),
+            params_dict={
+                "kernel": fc_param["kernel"],
+                # "bias": fc_param["bias"],
+                "bias": fc_param["bias"] * 0.0,
+            },
             dtype=self.dtype,
         )(x)
+        # .unbias_forward(x)
+        assert unbiased_x.shape == (x.shape[0], self.num_classes_), unbiased_x.shape
+        
+        return x_wo_head, unbiased_x
+    
+        raise NotImplementedError
+        x = net(x)
         if self.aux_logits:
             return x, aux
-        return x
+        assert x.shape == (x.shape[0], self.num_classes_)
+        assert unbiased_x.shape == (x.shape[0], self.num_classes_)
+        return x, unbiased_x
 
     def _transform_input(self, x):
         if self.transform_input:
@@ -191,26 +209,37 @@ class InceptionV3(nn.Module):
 
 class Dense(nn.Module):
     features: int
+    in_features: int = None
     kernel_init: functools.partial = nn.initializers.lecun_normal()
     bias_init: functools.partial = nn.initializers.zeros
     params_dict: dict = None
     dtype: str = "float32"
 
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(
-            features=self.features,
-            kernel_init=(
+    # @nn.compact
+    def setup(self):
+        custom_kernel_init = (
                 self.kernel_init
                 if self.params_dict is None
                 else lambda *_: jnp.array(self.params_dict["kernel"])
-            ),
+            )
+        self.nn_dense = nn.Dense(
+            features=self.features,
+            kernel_init=custom_kernel_init,
             bias_init=(
                 self.bias_init
                 if self.params_dict is None
                 else lambda *_: jnp.array(self.params_dict["bias"])
             ),
-        )(x)
+        )
+        self.weight = self.param('kernel', custom_kernel_init, (self.in_features, self.features))
+    
+    def __call__(self, x):
+        x = self.nn_dense(x)
+        return x
+    
+    def unbias_forward(self, x):
+        raise NotImplementedError
+        x = jnp.dot(x, self.weight)
         return x
 
 

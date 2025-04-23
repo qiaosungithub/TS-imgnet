@@ -108,21 +108,52 @@ def compute_jax_fid(
     )
 
     l_feats = []
+    unbiased_feats = []
     for i, x in enumerate(dataloader):
         if i % 50 == 0:
             logging.info(f"Evaluating {i} / {len(dataloader)}: {list(x.shape)}")
         x = resize.forward(x)  # Kaiming: match the Pytorch version
         x = x.numpy().transpose(0, 2, 3, 1)
-        pred = inception_fn(inception_params, jax.lax.stop_gradient(x))
+        pred, pred_unbiased = inception_fn(inception_params, jax.lax.stop_gradient(x))
         pred = pred.squeeze(axis=1).squeeze(axis=1)
         l_feats.append(pred)
+        unbiased_feats.append(pred_unbiased)
     np_feats = np.concatenate(l_feats)
     np_feats = np_feats[:num_samples]
+    unbiased_feats = np.concatenate(unbiased_feats)
+    unbiased_feats = unbiased_feats[:num_samples]
+    inc_mu, inc_sigma = isc_features_to_metric(unbiased_feats)
+    
     mu = np.mean(np_feats, axis=0)
     sigma = np.cov(np_feats, rowvar=False)
 
-    return mu, sigma
+    return mu, sigma, inc_mu, inc_sigma
 
+def isc_features_to_metric(feature, splits=10, shuffle=True, rng_seed=2020):
+    # assert torch.is_tensor(feature) and feature.dim() == 2
+    feature = torch.from_numpy(feature)
+    assert torch.is_tensor(feature) and feature.dim() == 2
+    # assert isinstance(feature, np.ndarray) and feature.ndim == 2
+    
+    N, C = feature.shape
+    if shuffle:
+        rng = np.random.RandomState(rng_seed)
+        feature = feature[rng.permutation(N), :]
+    feature = feature.double()
+
+    p = feature.softmax(dim=1)
+    log_p = feature.log_softmax(dim=1)
+
+    scores = []
+    for i in range(splits):
+        p_chunk = p[(i * N // splits) : ((i + 1) * N // splits), :]
+        log_p_chunk = log_p[(i * N // splits) : ((i + 1) * N // splits), :]
+        q_chunk = p_chunk.mean(dim=0, keepdim=True)
+        kl = p_chunk * (log_p_chunk - q_chunk.log())
+        kl = kl.sum(dim=1).mean().exp().item()
+        scores.append(kl)
+
+    return float(np.mean(scores)), float(np.std(scores))
 
 class ResizeDataset(torch.utils.data.Dataset):
     """

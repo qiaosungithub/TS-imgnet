@@ -298,9 +298,16 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=Fals
     jax.random.normal(jax.random.key(0), ()).block_until_ready()
     return samples  # images have been all gathered
 
+inception_net = None
+stats_ref = None
+
 def get_fid_evaluater(config, p_sample_step, logger, latent_manager):
-    inception_net = fid_util.build_jax_inception()
-    stats_ref = fid_util.get_reference(config.fid.cache_ref, inception_net)
+    global inception_net
+    global stats_ref
+    if inception_net is None:
+        log_for_0("Building inception net...")
+        inception_net = fid_util.build_jax_inception()
+        stats_ref = fid_util.get_reference(config.fid.cache_ref, inception_net)
     run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager)
 
     def eval_fid(state, ema_only=False, use_teacher=False):
@@ -313,25 +320,30 @@ def get_fid_evaluater(config, p_sample_step, logger, latent_manager):
             )
             num = samples_all.shape[0]
             kk = num // 1000
-            mu, sigma = fid_util.compute_jax_fid(samples_all, inception_net)
+            mu, sigma, ins_mean, ins_sigma = fid_util.compute_jax_fid(samples_all, inception_net)
             fid_score = fid_util.compute_fid(
                 mu, stats_ref["mu"], sigma, stats_ref["sigma"]
             )
             log_for_0(f"w/o ema: FID at {num} samples: {fid_score}")
             logger.log_dict(step+1, {f"FID-{kk}k": fid_score})
-
+            log_for_0(f"w/o ema: inception score: {ins_mean}土{ins_sigma}")
+            logger.log_dict(step + 1, {f"IS-{kk}k": ins_mean})
+            logger.log_dict(step + 1, {f"IS-{kk}k_std": ins_sigma})
         samples_all = sample_util.generate_samples_for_fid_eval(
             state, config, p_sample_step, run_p_sample_step_inner, ema=True
         )
         num = samples_all.shape[0]
         kk = num // 1000
-        mu, sigma = fid_util.compute_jax_fid(samples_all, inception_net)
+        mu, sigma, ins_mean, ins_sigma = fid_util.compute_jax_fid(samples_all, inception_net)
         fid_score_ema = fid_util.compute_fid(
             mu, stats_ref["mu"], sigma, stats_ref["sigma"]
         )
         T = 'teacher_' if use_teacher else ''
         log_for_0(f"{T} w/ ema: FID at {num} samples: {fid_score_ema}")
         logger.log_dict(step+1, {f"{T}FID-{kk}k_ema": fid_score_ema})
+        log_for_0(f"{T} w/ ema: inception score: {ins_mean}土{ins_sigma}")
+        logger.log_dict(step + 1, {f"{T}IS-{kk}k_ema": ins_mean})
+        logger.log_dict(step + 1, {f"{T}IS-{kk}k_std_ema": ins_sigma})
 
         vis = make_grid_visualization(samples_all, to_uint8=False)
         vis = jax.device_get(vis)
@@ -448,7 +460,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         # logging.info(f'after load example_element at layer 0: {example_element}')
 
     ########################## load teacher #########################
-    if config.load_teacher_from != "" and not config.just_evaluate:
+    if config.load_teacher_from != "":# and not config.just_evaluate:
         teacher_model = create_model(
             model_cls = getattr(tarflow, config.teacher.name),
             half_precision=config.training.half_precision,
@@ -509,6 +521,21 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         ),
         axis_name="batch",
     )
+    p_sample_step_teacher = jax.pmap(
+        partial(
+            sample_step,
+            model=model,
+            rng_init=jax.random.PRNGKey(0),
+            device_batch_size=config.fid.device_batch_size,
+            guidance=config.fid.guidance,
+            noise_level=config.training.noise_level,
+            temperature=config.fid.temperature,
+            label_cond=config.fid.label_cond,
+            student=False,
+            just_prior=config.just_prior,
+        ),
+        axis_name="batch",
+    )
 
     vis_sample_idx = jax.process_index() * jax.local_device_count() + jnp.arange(jax.local_device_count())  # for visualization
     log_for_0(f"fixed_sample_idx: {vis_sample_idx}")
@@ -543,7 +570,19 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     # prepare for FID evaluation
     if config.fid.on_use:
         fid_evaluator = get_fid_evaluater(config, p_sample_step, logger, latent_manager)
+        teacher_fid_evaluator = get_fid_evaluater(config, p_sample_step_teacher, logger, latent_manager)
         # handle just_evaluate
+        if config.eval_teacher:
+            log_for_0("Sampling for teacher images ...")
+            vis = run_p_sample_step(p_sample_step_teacher, state, vis_sample_idx, latent_manager, ema=True)
+            vis = jax.device_get(vis)
+            vis = float_to_uint8(vis)
+            for i in range(7):
+                logger.log_image(1, {f"vis_sample_teacher_{i}": vis[i]})
+            # vis = make_grid_visualization(vis)
+            # logger.log_image(1, {"vis_sample_teacher": vis[0]})
+            fid_score_teacher = teacher_fid_evaluator(state, ema_only=True, use_teacher=True)
+            log_for_0(f"!!! Teacher FID: {fid_score_teacher}")
         if config.just_evaluate:
             log_for_0("Sampling for images ...")
             vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=False)
