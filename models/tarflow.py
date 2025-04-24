@@ -669,7 +669,6 @@ class NormalizingFlow(nn.Module):
             which_cache: str
             train: bool
         """
-        # total_x = [x]
         x = self.patchify(x)  # [B, T, C]
         B, T, C = x.shape
         xs = [x]
