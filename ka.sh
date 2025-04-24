@@ -33,7 +33,9 @@ fi
 # export VM_NAME=kmh-tpuvm-v2-32-preemptible-1
 # export VM_NAME=kmh-tpuvm-v2-32-preemptible-2
 # export VM_NAME=kmh-tpuvm-v3-32-preemptible-1
-# export VM_NAME=kmh-tpuvm-v4-32-preemptible-yiyang
+export VM_NAME=kmh-tpuvm-v4-32-preemptible-yiyang
+# export VM_NAME=kmh-tpuvm-v4-32-preemptible-yiyang2
+# export VM_NAME=kmh-tpuvm-v4-32-preemptible-yiyang3
 # export VM_NAME=kmh-tpuvm-v4-32-preemptible-2
 # export VM_NAME=kmh-tpuvm-v4-32-preemptible-3
 # export VM_NAME=kmh-tpuvm-v4-32-preemptible-4
@@ -41,7 +43,7 @@ fi
 # export VM_NAME=kmh-tpuvm-v3-32-5
 # export VM_NAME=kmh-tpuvm-v3-32-11
 # export VM_NAME=kmh-tpuvm-v3-32-12
-export VM_NAME=kmh-tpuvm-v3-32-13
+# export VM_NAME=kmh-tpuvm-v3-32-13
 
 #####################################
 

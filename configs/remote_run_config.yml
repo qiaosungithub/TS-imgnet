@@ -27,6 +27,7 @@ model:
     name: TSNF_Small_p2_b8_l8 # 118M
     teacher_dropout: 0.0
     student_dropout: 0.0
+    causal_student: False
     # prior_norm: 0.5 # not supported now
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
@@ -51,4 +52,4 @@ load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250411_151
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "lr2e-4+ema0.9996"
+wandb_notes: "noncausal student"

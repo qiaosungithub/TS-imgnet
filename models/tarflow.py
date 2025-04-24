@@ -207,6 +207,7 @@ class MetaBlock(nn.Module):
     dropout: float = 0.0
     debug: bool = False
     mode: str = "same" # options: same, reverse
+    causal_attn: bool = True # whether to use causal attention. If True, the attention will be a causal model.
 
     dtype: Any = jnp.float32
     
@@ -227,8 +228,11 @@ class MetaBlock(nn.Module):
         self.proj_out = nn.Dense(features=2*self.in_channels, dtype=self.dtype, 
             kernel_init=nn.initializers.zeros if not self.debug else nn.initializers.normal(stddev=0.01),
         bias_init=nn.initializers.zeros) 
-        self.attn_mask = lambda: jnp.tril(jnp.ones((self.num_patches, self.num_patches), dtype=jnp.bool))
-
+        if self.causal_attn:
+            self.attn_mask = lambda: jnp.tril(jnp.ones((self.num_patches, self.num_patches), dtype=jnp.bool))
+        else:
+            self.attn_mask = lambda: None
+        
     def forward_flatten(self,
                         x: jnp.ndarray,
                         y: jnp.ndarray | None = None,
@@ -423,6 +427,7 @@ def reverse_block(
     B, T, C = x.shape
     num_heads = block.num_heads
     head_dim = block.channels // num_heads
+    assert block.causal_attn, "causal attention is required for kv cache"
     k_cache, v_cache = [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), "idx": 0} for _ in range(block.num_layers)], [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), "idx": 0} for _ in range(block.num_layers)]
     
     assert T == block.num_patches
@@ -489,6 +494,7 @@ class NormalizingFlow(nn.Module):
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
+    causal_attn: bool = True # whether to use causal attention. If True, the attention will be a causal model.
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -518,6 +524,7 @@ class NormalizingFlow(nn.Module):
                 mode=self.mode,
                 dropout=self.dropout,
                 debug=self.debug,
+                causal_attn=self.causal_attn,
             ) for i in range(self.num_blocks)
         ]
         
@@ -720,6 +727,7 @@ class TeacherStudent(nn.Module):
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
+    causal_student: bool = True # whether to use causal student. If True, the student will be a causal model.
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -755,6 +763,7 @@ class TeacherStudent(nn.Module):
             mode=self.mode,
             debug=self.debug,
             prior_norm=self.prior_norm,
+            causal_attn=self.causal_student,
         )
         
     def patchify(self, x):
