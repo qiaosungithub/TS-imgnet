@@ -357,40 +357,49 @@ class MetaBlock(nn.Module):
         x: jnp.ndarray,
         y: jnp.ndarray | None = None,
         temp: float = 1.0,
-        which_cache: str = 'cond',
+        guidance: float = 0.0,
         train: bool = False,
     ):
+        # NOTE: train=True is not supported
         """
         reverse: (x-mu) * exp(-alpha)
         """
-        raise LookupError("没用到？")
         x = self.permutation(x)
         B, T, C = x.shape
         num_heads = self.num_heads
         head_dim = self.channels // num_heads
         k_cache, v_cache = [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), "idx": 0} for _ in range(self.num_layers)], [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), "idx": 0} for _ in range(self.num_layers)]
         
+        # loop over num_tokens.
         def step_fn(i, vals):
-            x_step, log_jacob, k_cache_step, v_cache_step = vals
+            x_step, k_cache_step, v_cache_step = vals
             for obj in k_cache_step + v_cache_step:
                 obj["idx"] = i
                 
-            alpha_i, mu_i, k_cache_step, v_cache_step = self.reverse_step(x_step, i, y, k_cache_step, v_cache_step, temp, which_cache, train)
+            alpha_i, mu_i, k_cache_step, v_cache_step = self.reverse_step(x_step, i, y, k_cache_step, v_cache_step, temp, which_cache='cond', train=train)
+
+            if guidance > 0:
+                alpha_i_uncond, mu_i_uncond, k_cache_step, v_cache_step = self.reverse_step(x_step, i, None, k_cache_step, 
+                v_cache_step, temp, which_cache='uncond', train=train) 
+                
+                alpha_i = (1 + guidance * i / (T - 1)) * alpha_i - guidance * i / (T - 1) * alpha_i_uncond
+                mu_i = (1 + guidance * i / (T - 1)) * mu_i - guidance * i / (T - 1) * mu_i_uncond
             
             x_sliced = jax.lax.dynamic_slice(x_step, (0, (i+1), 0), (x_step.shape[0], 1, x_step.shape[2]))
             assert x_sliced.shape == (B, 1, C)
-            assert self.mode == REV_ORDER_L2_EACH_BLOCK
-            val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
-            log_jacob -= alpha_i.mean(axis=(1, 2))
+            if self.mode == "same":
+                val = x_sliced * jnp.exp(alpha_i.astype(jnp.float32)) + mu_i
+            elif self.mode == "reverse":
+                val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
+            else:
+                raise ValueError(f"Unknown mode: {self.mode}")
             x_step = jax.lax.dynamic_update_slice(x_step, val, (0, (i+1), 0))
-            return x_step, log_jacob, k_cache_step, v_cache_step
+            return x_step, k_cache_step, v_cache_step
         
-        tot_log_jacob = jnp.zeros((B,), dtype=jnp.float32)
-        x, tot_log_jacob, _, _ = jax.lax.fori_loop(0, T - 1, step_fn, (x, tot_log_jacob, k_cache, v_cache))
+        x, _, _ = jax.lax.fori_loop(0, T - 1, step_fn, (x, k_cache, v_cache))
         
         x = self.permutation(x, inverse=True)
-        
-        return x, tot_log_jacob
+        return x
     
     def __call__(self, 
             x: jnp.ndarray, 
@@ -589,6 +598,12 @@ class NormalizingFlow(nn.Module):
             
             zs = []
             current_x = x
+
+            # implement label drop here: drop y w.p 0.1
+            if y is not None:
+                rng = self.make_rng('drop')
+                mask = jax.random.uniform(rng, (B,), minval=0, maxval=1) < 0.1
+                y = jnp.where(mask, -1, y)
             
             for i in range(self.num_blocks):
                 rng, rng_used = safe_split(rng)
@@ -638,20 +653,25 @@ class NormalizingFlow(nn.Module):
                 x: jnp.ndarray,
                 y: jnp.ndarray | None = None,
                 temp: float = 1.0,
-                which_cache: str = 'cond',
+                guidance: float = 0.0,
                 train: bool = False,
         ):
-        raise LookupError("没用到？")
-        x = self.patchify(x)
-        tot_log_jacob = 0.0
+        """
+        Used for teacher reverse, during student training.
+        x: (B, T, C)
+        Here, train=False.
+        xs: latent to image
+        """
+        B, T, C = x.shape
+        xs = [x]
         for i in range(self.num_blocks-1,-1,-1):
-            x, log_jacob = self.blocks[i].reverse(x, y, temp=temp, which_cache=which_cache, train=train)
-            tot_log_jacob += log_jacob
-            
-        log_prior = 0.5 * (x ** 2).mean()
-        loss = - tot_log_jacob.mean() + log_prior
-        loss_dict = {'loss': loss, 'log_det': tot_log_jacob.mean(), 'log_prior': log_prior}
-        return loss, loss_dict, x
+            x = self.blocks[i].reverse(x, y, temp=temp, guidance=guidance, train=train)
+            xs.append(x)
+        
+        xs = jnp.stack(xs, axis=0)
+        assert xs.shape == (self.num_blocks+1, B, T, C)
+        
+        return xs
         
     def __call__(self, 
                 x: jnp.ndarray, 
@@ -721,6 +741,7 @@ class TeacherStudent(nn.Module):
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
+    teacher_guidance: float = 0.0 # used for student distilling
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -800,25 +821,34 @@ class TeacherStudent(nn.Module):
         ):
         """
         Student Train step.
+        x: (B, T, C) noise
+        Here, the input is noise, and student will learn from the teacher reverse process.
         """
         
         rng = self.make_rng('dropout')
         rng, rng_used = safe_split(rng)
         rng, rng_used_2 = safe_split(rng)
+
+        # generate path by teacher reverse
+        zs = self.teacher.reverse(x, y, temp=temp, guidance=self.teacher_guidance, train=False) # latent to image
         
-        # generate zs by teacher, from dataset images
-        loss_1, loss_dict_1, zs, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=False, rng=rng_used)
-        del rng_used
+        # # generate zs by teacher, from dataset images
+        # loss_1, loss_dict_1, zs, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=False, rng=rng_used)
+        # del rng_used
         loss_dict = {}
 
         # only implement REVERSE L2
-        # here, the zs is from image to latent, num_blocks+1 z in total.
+        # here, the zs is from latent to image, num_blocks+1 z in total.
         zs = jax.lax.stop_gradient(zs)
-        zs = jnp.flip(zs, axis=0) # flip to latent to image
         
         # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
         xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
+
+        # to prevent nan, replace all nan to 0 in zs and xs
+        nan_ratio = jnp.mean(jnp.isnan(xs))
+        xs = jnp.nan_to_num(xs, nan=0.0)
+        zs = jnp.nan_to_num(zs, nan=0.0)
         
         losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
@@ -833,6 +863,8 @@ class TeacherStudent(nn.Module):
             loss_dict[f"norm_x_{i}"] = norm_x[i]
         for i in range(len(norm_z)): # teacher
             loss_dict[f"norm_z_{i}"] = norm_z[i]
+
+        loss_dict['nan_ratio'] = nan_ratio
             
         # losses /= (norm_x + norm_z)
         # losses *= jnp.mean(norm_x + norm_z)

@@ -56,7 +56,7 @@ def initialized(key, image_size, model):
     Initialize the model, and return the model parameters.
     """
     fake_bz = 2
-    input_shape = (fake_bz, 32, 32, 4)
+    input_shape = (fake_bz, 256, 16)
     label_shape = (fake_bz,)
 
     @jax.jit
@@ -175,41 +175,33 @@ def compute_metrics(dict_losses):
     return metrics
 
 
-def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn, noise_level, dropout_rate=0.0, latent_manager: LatentManager = None):
+def train_step_with_vae(state, latent_shape, rng_init, learning_rate_fn, ema_scales_fn):
     """
     Perform a single training step.
     """
     # ResNet has no dropout; but maintain rng_dropout for future usage
     rng_step = random.fold_in(rng_init, state.step)
     rng_device = random.fold_in(rng_step, lax.axis_index(axis_name="batch"))
-    rng_noise, rng_gen, rng_dropout, rng_latent = random.split(rng_device, 4)
-    
-    cached = batch["image"]
-    # print(f"cached: {cached}", flush=True)
-    images = latent_manager.cached_encode(cached, rng_latent)
-    # print(f"images: {images}", flush=True)
+    rng_gen, rng_dropout, rng_latent = random.split(rng_device, 3)
 
-    ema_decay, scales = ema_scales_fn(state.step)
+    z = jax.random.normal(rng_latent, latent_shape)
+    y = jax.random.randint(rng_latent, (latent_shape[0],), 0, 1000)
     
-    # noise injection
-    noise = jax.random.normal(rng_noise, images.shape)
-    images = images + noise_level * noise
+    ema_decay, _ = ema_scales_fn(state.step)
     
-    rng_label, rng_dropout = random.split(rng_dropout, 2)
-    
-    if dropout_rate > 0.0:
-        mask = jax.random.bernoulli(rng_label, dropout_rate, batch["label"].shape)
-        label = jnp.where(mask, -jnp.ones_like(batch["label"]), batch["label"])
-        # print(f"label: {label}", flush=True)
-    else:
-        label = batch["label"]
+    # if dropout_rate > 0.0:
+    #     mask = jax.random.bernoulli(rng_label, dropout_rate, batch["label"].shape)
+    #     label = jnp.where(mask, -jnp.ones_like(batch["label"]), batch["label"])
+    #     # print(f"label: {label}", flush=True)
+    # else:
+    #     label = batch["label"]
     
     def loss_fn(wrt):
         """loss function used for training."""
         outputs, new_model_state = state.apply_fn(
             {"params": wrt, "batch_stats": state.batch_stats},
-            x=images,
-            y=label,
+            x=z,
+            y=y,
             mutable=["batch_stats"],
             rngs=dict(gen=rng_gen, dropout=rng_dropout),
         )
@@ -405,7 +397,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     #                           Create Dataloaders                       #
     ######################################################################
     # config.dataset.use_flip = not config.aug.use_edm_aug
-    if not config.just_evaluate:
+    if not config.just_evaluate and False:
         train_loader, steps_per_epoch = input_pipeline.create_split(
             config.dataset,
             local_batch_size,
@@ -476,6 +468,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         
         del teacher_model, teacher_state
 
+    steps_per_epoch = 1251 # same as ImageNet bs1024
+
     if not config.just_evaluate:
         # step_offset > 0 if restarting from checkpoint
         step_offset = int(state.step)
@@ -500,9 +494,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             rng_init=rng,
             learning_rate_fn=learning_rate_fn,
             ema_scales_fn=ema_scales_fn,
-            noise_level=config.training.noise_level,
-            dropout_rate=config.training.label_drop_rate,
-            latent_manager=latent_manager,
+            latent_shape=(local_batch_size, 256, 16),
         ),
         axis_name="batch",
     )
@@ -521,21 +513,21 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         ),
         axis_name="batch",
     )
-    p_sample_step_teacher = jax.pmap(
-        partial(
-            sample_step,
-            model=model,
-            rng_init=jax.random.PRNGKey(0),
-            device_batch_size=config.fid.device_batch_size,
-            guidance=config.fid.guidance,
-            noise_level=config.training.noise_level,
-            temperature=config.fid.temperature,
-            label_cond=config.fid.label_cond,
-            student=False,
-            just_prior=config.just_prior,
-        ),
-        axis_name="batch",
-    )
+    # p_sample_step_teacher = jax.pmap(
+    #     partial(
+    #         sample_step,
+    #         model=model,
+    #         rng_init=jax.random.PRNGKey(0),
+    #         device_batch_size=config.fid.device_batch_size,
+    #         guidance=config.fid.guidance,
+    #         noise_level=config.training.noise_level,
+    #         temperature=config.fid.temperature,
+    #         label_cond=config.fid.label_cond,
+    #         student=False,
+    #         just_prior=config.just_prior,
+    #     ),
+    #     axis_name="batch",
+    # )
 
     vis_sample_idx = jax.process_index() * jax.local_device_count() + jnp.arange(jax.local_device_count())  # for visualization
     log_for_0(f"fixed_sample_idx: {vis_sample_idx}")
@@ -570,19 +562,19 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     # prepare for FID evaluation
     if config.fid.on_use:
         fid_evaluator = get_fid_evaluater(config, p_sample_step, logger, latent_manager)
-        teacher_fid_evaluator = get_fid_evaluater(config, p_sample_step_teacher, logger, latent_manager)
+        # teacher_fid_evaluator = get_fid_evaluater(config, p_sample_step_teacher, logger, latent_manager)
         # handle just_evaluate
-        if config.eval_teacher:
-            log_for_0("Sampling for teacher images ...")
-            vis = run_p_sample_step(p_sample_step_teacher, state, vis_sample_idx, latent_manager, ema=True)
-            vis = jax.device_get(vis)
-            vis = float_to_uint8(vis)
-            for i in range(7):
-                logger.log_image(1, {f"vis_sample_teacher_{i}": vis[i]})
-            # vis = make_grid_visualization(vis)
-            # logger.log_image(1, {"vis_sample_teacher": vis[0]})
-            fid_score_teacher = teacher_fid_evaluator(state, ema_only=True, use_teacher=True)
-            log_for_0(f"!!! Teacher FID: {fid_score_teacher}")
+        # if config.eval_teacher:
+        #     log_for_0("Sampling for teacher images ...")
+        #     vis = run_p_sample_step(p_sample_step_teacher, state, vis_sample_idx, latent_manager, ema=True)
+        #     vis = jax.device_get(vis)
+        #     vis = float_to_uint8(vis)
+        #     for i in range(7):
+        #         logger.log_image(1, {f"vis_sample_teacher_{i}": vis[i]})
+        #     # vis = make_grid_visualization(vis)
+        #     # logger.log_image(1, {"vis_sample_teacher": vis[0]})
+        #     fid_score_teacher = teacher_fid_evaluator(state, ema_only=True, use_teacher=True)
+        #     log_for_0(f"!!! Teacher FID: {fid_score_teacher}")
         if config.just_evaluate:
             log_for_0("Sampling for images ...")
             vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=False)
@@ -637,8 +629,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     timer.reset()
     min_fid = float("inf")
     for epoch in range(epoch_offset, training_config.num_epochs):
-        if jax.process_count() > 1:
-            train_loader.sampler.set_epoch(epoch)
+        # if jax.process_count() > 1:
+        #     train_loader.sampler.set_epoch(epoch)
         log_for_0("epoch {}...".format(epoch))
         
         step = epoch * steps_per_epoch
@@ -661,9 +653,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         
         # training
         train_metrics = MyMetrics(reduction="last")
-        for n_batch, batch in enumerate(train_loader):
-            batch = prepare_batch_data(batch)
-            state, metrics = p_train_step(state, batch)
+        for n_batch in range(steps_per_epoch):
+            # batch = prepare_batch_data(batch)
+            state, metrics = p_train_step(state)
             train_metrics.update(metrics)
 
             if epoch == epoch_offset and n_batch == 0:
