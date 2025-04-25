@@ -521,21 +521,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         ),
         axis_name="batch",
     )
-    p_sample_step_teacher = jax.pmap(
-        partial(
-            sample_step,
-            model=model,
-            rng_init=jax.random.PRNGKey(0),
-            device_batch_size=config.fid.device_batch_size,
-            guidance=config.fid.guidance,
-            noise_level=config.training.noise_level,
-            temperature=config.fid.temperature,
-            label_cond=config.fid.label_cond,
-            student=False,
-            just_prior=config.just_prior,
-        ),
-        axis_name="batch",
-    )
 
     vis_sample_idx = jax.process_index() * jax.local_device_count() + jnp.arange(jax.local_device_count())  # for visualization
     log_for_0(f"fixed_sample_idx: {vis_sample_idx}")
@@ -570,19 +555,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     # prepare for FID evaluation
     if config.fid.on_use:
         fid_evaluator = get_fid_evaluater(config, p_sample_step, logger, latent_manager)
-        teacher_fid_evaluator = get_fid_evaluater(config, p_sample_step_teacher, logger, latent_manager)
         # handle just_evaluate
-        if config.eval_teacher:
-            log_for_0("Sampling for teacher images ...")
-            vis = run_p_sample_step(p_sample_step_teacher, state, vis_sample_idx, latent_manager, ema=True)
-            vis = jax.device_get(vis)
-            vis = float_to_uint8(vis)
-            for i in range(7):
-                logger.log_image(1, {f"vis_sample_teacher_{i}": vis[i]})
-            # vis = make_grid_visualization(vis)
-            # logger.log_image(1, {"vis_sample_teacher": vis[0]})
-            fid_score_teacher = teacher_fid_evaluator(state, ema_only=True, use_teacher=True)
-            log_for_0(f"!!! Teacher FID: {fid_score_teacher}")
         if config.just_evaluate:
             log_for_0("Sampling for images ...")
             vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=False)
@@ -626,7 +599,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         # eval teacher fid and log
         log_for_0("evaluating teacher fid...")
         fid_score_teacher = fid_evaluator_T(state, ema_only=True, use_teacher=True)
-        # assert fid_score_teacher < 10, 'bad teacher fid score {}'.format(fid_score_teacher) # NOTE: This is bad as expected, since the teacher doesn't denoise
         return fid_score_teacher
 
     log_for_0("Initial compilation, this might take some minutes...")
