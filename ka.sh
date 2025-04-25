@@ -15,7 +15,7 @@ if [ -z "$TASKNAME" ]; then
     exit 1
 fi
 
-# specify your TPU VM name here!
+if [ -z "$1" ]; then
 
 ############## TPU VMs ##############
 
@@ -25,28 +25,27 @@ fi
 # export VM_NAME=kmh-tpuvm-v2-32-4
 # export VM_NAME=kmh-tpuvm-v2-32-5
 # export VM_NAME=kmh-tpuvm-v2-32-6
+export VM_NAME=gaoduile
 # export VM_NAME=kmh-tpuvm-v2-32-7
 # export VM_NAME=kmh-tpuvm-v2-32-8
-# export VM_NAME=kmh-tpuvm-v4-8-1
-# export VM_NAME=kmh-tpuvm-v4-8-2
-# export VM_NAME=kmh-tpuvm-v4-8-6
+# export VM_NAME=kmh-tpuvm-v3-32-1
 # export VM_NAME=kmh-tpuvm-v2-32-preemptible-1
 # export VM_NAME=kmh-tpuvm-v2-32-preemptible-2
 # export VM_NAME=kmh-tpuvm-v3-32-preemptible-1
 # export VM_NAME=kmh-tpuvm-v4-32-preemptible-yiyang
-# export VM_NAME=kmh-tpuvm-v4-32-preemptible-2
-# export VM_NAME=kmh-tpuvm-v4-32-preemptible-3
-# export VM_NAME=kmh-tpuvm-v4-32-preemptible-4
-# export VM_NAME=kmh-tpuvm-v3-32-1
 # export VM_NAME=kmh-tpuvm-v3-32-5
 # export VM_NAME=kmh-tpuvm-v3-32-11
 # export VM_NAME=kmh-tpuvm-v3-32-12
-export VM_NAME=kmh-tpuvm-v3-32-13
+# export VM_NAME=kmh-tpuvm-v3-32-13
+# export VM_NAME=kmh-tpuvm-v4-8-1
+# export VM_NAME=kmh-tpuvm-v4-8-2
+# export VM_NAME=kmh-tpuvm-v4-8-6
 
 #####################################
-
-# Zone: your TPU VM zone
-
+else
+    echo ka: use command line arguments
+        export VM_NAME=$1
+fi
 # Zone: your TPU VM zone
 if [[ $VM_NAME == *"v4"* ]]; then
     export ZONE=us-central2-b
