@@ -25,7 +25,7 @@ if [ -z "$1" ]; then
 # export VM_NAME=kmh-tpuvm-v2-32-4
 # export VM_NAME=kmh-tpuvm-v2-32-5
 # export VM_NAME=kmh-tpuvm-v2-32-6
-export VM_NAME=gaoduile
+# export VM_NAME=gaoduile
 # export VM_NAME=kmh-tpuvm-v2-32-7
 # export VM_NAME=kmh-tpuvm-v2-32-8
 # export VM_NAME=kmh-tpuvm-v3-32-1
@@ -36,7 +36,7 @@ export VM_NAME=gaoduile
 # export VM_NAME=kmh-tpuvm-v3-32-5
 # export VM_NAME=kmh-tpuvm-v3-32-11
 # export VM_NAME=kmh-tpuvm-v3-32-12
-# export VM_NAME=kmh-tpuvm-v3-32-13
+export VM_NAME=kmh-tpuvm-v3-32-13
 # export VM_NAME=kmh-tpuvm-v4-8-1
 # export VM_NAME=kmh-tpuvm-v4-8-2
 # export VM_NAME=kmh-tpuvm-v4-8-6
