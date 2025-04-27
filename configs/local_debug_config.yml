@@ -37,6 +37,7 @@ fid:
     # num_samples: 50000 # 50k
     num_samples: 5000
     guidance: 0.0 # 0 for with label
+    guidance_method: ma
     device_batch_size: 8
     temperature: 1.0
     label_cond: True

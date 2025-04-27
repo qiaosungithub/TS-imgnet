@@ -72,14 +72,14 @@ def main(argv):
         else:
             train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
-    f()
+    # f()
 
-    # if not c.just_evaluate: raise SystemError(f"please modify main.py!!!")
-    # for guidance in [1.5, 2.0, 2.5]:
-    #     log_for_0("Guidance: %f", guidance)
-    #     c.fid.guidance = guidance
-    #     c.wandb_name = f"Stu-default-cfg-{guidance}-5k"
-    #     f()
+    if not c.just_evaluate: raise SystemError(f"please modify main.py!!!")
+    for guidance in [2.5, 3.5]:
+        log_for_0("Guidance: %f", guidance)
+        c.fid.guidance = guidance
+        c.wandb_name = f"Stu-default-cfg-ma-{guidance}-5k"
+        f()
 
 
 if __name__ == "__main__":

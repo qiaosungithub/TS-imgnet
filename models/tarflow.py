@@ -463,12 +463,25 @@ def reverse_block_student(
     temp: float = 1.0, 
     which_cache: str = 'cond', 
     guidance: float = 0,
+    guidance_method: str = "x", # options: ['x', 'ma']
     train: bool = False):
     
-    x_out, _, _, _ = block.apply(params, x, y, temp, which_cache, train, method=block.forward)
+    x_out, _, alpha, mu = block.apply(params, x, y, temp, which_cache, train, method=block.forward)
     if guidance > 0:
-        x_uncond, _, _, _ = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
-        x_out = (1 + guidance) * x_out - guidance * x_uncond # simple guidance.
+        if guidance_method == "x":
+            x_uncond, _, _, _ = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
+            x_out = (1 + guidance) * x_out - guidance * x_uncond # simple guidance.
+        elif guidance_method == "ma":
+            B, T, C = x.shape
+            guidance = guidance * jnp.arange(0, T, dtype=jnp.float32) / (T - 1)
+            guidance = guidance.reshape(1, T, 1)
+            x_uncond, _, alpha_uncond, mu_uncond = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
+            alpha = (1 + guidance) * alpha - guidance * alpha_uncond
+            mu = (1 + guidance) * mu - guidance * mu_uncond
+            assert block.mode == "reverse"
+            x_in = block.permutation(x)
+            x_out = x_in * jnp.exp(alpha) + mu
+            x_out = block.permutation(x_out, inverse=True)
     
     return x_out
 
@@ -849,11 +862,13 @@ def reverse(params,
             y: jnp.ndarray | None = None,
             temp: float = 1.0,
             guidance: float = 0,
+            guidance_method: str = "x", # options: ['x', 'ma']
             which_cache: str = 'cond',
             train: bool = False):
     """
     used for teacher generation.
     """
+    assert guidance_method == "ma", f"only support x guidance, but got {guidance_method}"
     # print('param keys:', params['params'].keys())
     patch_num = nf.img_size // nf.patch_size
     num_patches = patch_num ** 2
@@ -882,6 +897,7 @@ def reverse_student(params,
             y: jnp.ndarray | None = None,
             temp: float = 1.0,
             guidance: float = 0,
+            guidance_method: str = "x", # options: ['x', 'ma']
             which_cache: str = 'cond',
             train: bool = False):
     print('param keys:', params['params'].keys())
@@ -902,13 +918,13 @@ def reverse_student(params,
                 permutation=PermutationFlip((nf.num_blocks-1-i)%2==1),
                 mode=nf.mode,
                 debug=nf.debug,
-            ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
+            ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance, guidance_method=guidance_method)
         # print("mean during layer:", x.mean())
     x = nf.unpatchify(x)
     return x
 
 # move this out from model for JAX compilation
-def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True, denoise=True, use_student=False):
+def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, guidance_method, temperature=1.0, label_cond=True, denoise=True, use_student=False):
     """
     Generate samples from the model.
     used for teacher generation.
@@ -928,9 +944,9 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
     
     rev_fn = reverse_student if use_student else reverse
     if label_cond:
-        x = rev_fn(params, model, z, y, guidance=guidance, temp=1.0)
+        x = rev_fn(params, model, z, y, guidance=guidance, guidance_method=guidance_method, temp=1.0)
     else:
-        x = rev_fn(params, model, z, y, guidance=guidance, temp=temperature)
+        x = rev_fn(params, model, z, y, guidance=guidance, guidance_method=guidance_method, temp=temperature)
     
     if noise_level == 0 or not denoise: return x
     def nabla_log_prob(x):
