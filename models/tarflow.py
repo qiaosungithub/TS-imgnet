@@ -847,7 +847,8 @@ class TeacherStudent(nn.Module):
             loss_dict[f"norm_x_{i}"] = norm_x[i]
         for i in range(len(norm_z)): # teacher
             loss_dict[f"norm_z_{i}"] = norm_z[i]
-            
+        
+        losses /= norm_z
         # losses /= (norm_x + norm_z)
         # losses *= jnp.mean(norm_x + norm_z)
         loss = jnp.sum(losses)
