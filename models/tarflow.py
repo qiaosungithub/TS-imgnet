@@ -833,7 +833,9 @@ class TeacherStudent(nn.Module):
         xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
         
-        losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
+        # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
+        assert xs.shape[0] % 2 == 0
+        losses = jnp.mean((xs[1::2] - zs[2::2]) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
         norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
         norm_x = jax.lax.stop_gradient(norm_x)
