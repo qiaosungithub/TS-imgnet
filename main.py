@@ -72,14 +72,35 @@ def main(argv):
         else:
             train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
-    f()
+    def search_cfg():
+        if c.just_evaluate and c.search_cfg:
+            first_search = [0.0, 2.0, 4.0, 6.0] # modify this for your search.
+            search = first_search
+            shift = 0.5 # how exact your best cfg is
+            fid = {}
+            while True:
+                search = sorted(search)
+                for guidance in search:
+                    if guidance in fid:
+                        continue
+                    log_for_0("Guidance: %f", guidance)
+                    c.fid.guidance = guidance
+                    c.wandb_name = f"Lb8l8-guidance-{guidance}-5k" # modify this for wandb
+                    fid[guidance] = f()
+                best_cfg = sorted(fid.items(), key=lambda x: x[1])[0][0]
+                greater = min([x for x in fid if x > best_cfg])
+                smaller = max([x for x in fid if x < best_cfg])
+                if greater - best_cfg < shift:
+                    search.append((greater + best_cfg) / 2)
+                if best_cfg - smaller < shift:
+                    search.append((smaller + best_cfg) / 2)
+                if len(search) == len(fid):
+                    log_for_0(f"Best cfg: {best_cfg}, FID: {fid[best_cfg]}")
+                    return
+        else: 
+            f()
 
-    # if not c.just_evaluate: raise SystemError(f"please modify main.py!!!")
-    # for guidance in [2.5, 3.5]:
-    #     log_for_0("Guidance: %f", guidance)
-    #     c.fid.guidance = guidance
-    #     c.wandb_name = f"Stu-default-cfg-ma-{guidance}-5k"
-    #     f()
+    search_cfg()
 
 
 if __name__ == "__main__":
