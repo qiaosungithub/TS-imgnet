@@ -577,6 +577,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             rng_init=rng,
             device_batch_size=config.fid.device_batch_size,
             guidance=config.fid.guidance,
+            guidance_method=config.fid.guidance_method,
             noise_level=config.training.noise_level,
             temperature=config.fid.temperature,
             label_cond=config.fid.label_cond,
