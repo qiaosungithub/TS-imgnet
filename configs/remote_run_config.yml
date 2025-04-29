@@ -52,4 +52,4 @@ load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250418_141
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.1 best teacher, loss weight / norm z"
+wandb_notes: "noise 0.1 best teacher, loss weight / norm z, no sg"
