@@ -28,6 +28,7 @@ model:
     teacher_dropout: 0.0
     student_dropout: 0.0
     # prior_norm: 0.5 # not supported now
+    stop_grad: False
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
     dropout: 0.0

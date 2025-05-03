@@ -593,6 +593,7 @@ class NormalizingFlow(nn.Module):
                 which_cache: str = 'cond',
                 train: bool = True,
                 rng = None,
+                stop_grad: bool = True,
         ):
             """
             used for student traning.
@@ -608,8 +609,10 @@ class NormalizingFlow(nn.Module):
                 rng, rng_used = safe_split(rng)
                 next_x, _, _, _ = self.blocks[i].forward(current_x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
                 zs.append(next_x)
-                # current_x = jax.lax.stop_gradient(next_x) # stop grad before feeding into next block. TODO: try to remove this.
-                current_x = next_x
+                if stop_grad:
+                    current_x = jax.lax.stop_gradient(next_x) # stop grad before feeding into next block.
+                else:
+                    current_x = next_x
                 del rng_used
 
             zs = jnp.stack(zs, axis=0)
@@ -736,6 +739,7 @@ class TeacherStudent(nn.Module):
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
+    stop_grad: bool = True # whether stop grad for student
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -832,7 +836,7 @@ class TeacherStudent(nn.Module):
         zs = jnp.flip(zs, axis=0) # flip to latent to image
         
         # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
-        xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
+        xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2, stop_grad=self.stop_grad) # lyy's smart loss
         # xs: from latent (not contained) to image
         
         losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
