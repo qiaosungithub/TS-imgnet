@@ -835,8 +835,8 @@ class TeacherStudent(nn.Module):
         # xs: from latent (not contained) to image
         
         # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
-        assert xs.shape[0] % 2 == 0
-        losses = jnp.mean((xs[1::2] - zs[2::2]) ** 2, axis=(1, 2, 3))
+        assert xs.shape[0] % 4 == 0
+        losses = jnp.mean((xs[3::4] - zs[4::4]) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
         norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
         norm_x = jax.lax.stop_gradient(norm_x)
