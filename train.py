@@ -17,7 +17,7 @@ from typing import Any
 from absl import logging
 from flax import jax_utils
 from flax.training import train_state
-import jax, optax, os, ml_collections, wandb, re
+import jax, optax, os, ml_collections, wandb, re, math
 from jax import lax, random
 import jax.numpy as jnp
 
@@ -86,13 +86,14 @@ def create_learning_rate_fn(
     warmup_fn = optax.linear_schedule(
         init_value=1e-6,
         end_value=training_config.learning_rate,
-        transition_steps=training_config.warmup_epochs * steps_per_epoch,
+        transition_steps=training_config.warmup_steps,
     )
     if training_config.lr_schedule in ['cosine', 'cos']:
-        cosine_epochs = max(training_config.num_epochs - training_config.warmup_epochs, 1)
+        total_steps = training_config.num_epochs * steps_per_epoch
+        cosine_steps = max(total_steps - training_config.warmup_steps, 1)
         schedule_fn = optax.cosine_decay_schedule(
             init_value=training_config.learning_rate,
-            decay_steps=cosine_epochs * steps_per_epoch,
+            decay_steps=cosine_steps,
             alpha=1e-6,
     )
     elif training_config.lr_schedule == "const":
@@ -100,7 +101,7 @@ def create_learning_rate_fn(
     else: raise NotImplementedError
     schedule_fn = optax.join_schedules(
         schedules=[warmup_fn, schedule_fn],
-        boundaries=[training_config.warmup_epochs * steps_per_epoch],
+        boundaries=[training_config.warmup_steps],
     )
     return schedule_fn
 
@@ -144,8 +145,6 @@ def create_train_state(
             # mask=mask_fn,  # TODO{km}
         )
     elif config.training.optimizer == "radam":
-        assert False
-        log_for_0(f"Using RAdam with wd {config.training.weight_decay}")
         assert config.training.weight_decay == 0.0
         tx = optax.radam(
             learning_rate=learning_rate_fn,
@@ -280,6 +279,9 @@ def sync_batch_stats(state):
         return state
     return state.replace(batch_stats=cross_replica_mean(state.batch_stats))
 
+inception_net = None
+stats_ref = None
+
 def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=False):
     # redefine the interface
     images = p_sample_step(
@@ -297,9 +299,6 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=Fals
     
     jax.random.normal(jax.random.key(0), ()).block_until_ready()
     return samples  # images have been all gathered
-
-inception_net = None
-stats_ref = None
 
 def get_fid_evaluater(config, p_sample_step, logger, latent_manager):
     global inception_net
@@ -373,9 +372,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         * (workdir + config.dataset.root).count("kmh-nfs-us-mount")
     ) % 4 == 0, "root path should be consistent with workdir"
 
-    if config.training.wandb and rank == 0:
-        wandb.init(project="TS_imgnet" if not config.just_evaluate else "TS_imgnet_eval", dir=workdir, tags=['sqa'], name=config.wandb_name)
-        wandb.config.update(config.to_dict())
+    if config.training.wandb:
+        
         try:
             ka = re.search(
                 r"kmh-tpuvm-v[234]-(\d+)(-preemptible)?-(\d+)", workdir
@@ -384,8 +382,12 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             ka = re.search(
                 r"kmh-tpuvm-v4-32-preemptible-yiyang(\d*)", workdir
             ).group()
-        wandb.config.update({"ka": ka})
-        wandb.run.notes = config.wandb_notes
+        ka = ka[10:] # remove "kmh-tpuvm-"
+        if rank == 0:
+            wandb.init(project="TS_imgnet" if not config.just_evaluate else "TS_imgnet_eval", dir=workdir, tags=['sqa'], name=config.wandb_name)
+            wandb.config.update(config.to_dict())
+            wandb.config.update({"ka": ka})
+            wandb.run.notes = config.wandb_notes
     logger = GoodLogger(use_wandb=config.training.wandb, workdir=workdir)
 
     rng = random.key(config.training.seed)
@@ -400,6 +402,15 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
 
     if local_batch_size % jax.local_device_count() > 0:
         raise ValueError("Local batch size must be divisible by the number of local devices")
+
+    # set fid device_batch_size
+    device_batch_size = 8 # default value (v3-8)
+    if config.training.wandb:
+        if "v3" in ka:
+            device_batch_size = 20
+        if "v4" in ka:
+            device_batch_size = 40
+
 
     ######################################################################
     #                           Create Dataloaders                       #
@@ -484,7 +495,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
 
     state = jax_utils.replicate(state)
 
-    latent_manager = LatentManager(config.dataset.vae, config.fid.device_batch_size)
+    latent_manager = LatentManager(config.dataset.vae, device_batch_size)
     
 
     ######################################################################
@@ -511,7 +522,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             sample_step,
             model=model,
             rng_init=jax.random.PRNGKey(0),
-            device_batch_size=config.fid.device_batch_size,
+            device_batch_size=device_batch_size,
             guidance=config.fid.guidance,
             guidance_method=config.fid.guidance_method,
             noise_level=config.training.noise_level,
@@ -554,6 +565,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         return state
 
     # prepare for FID evaluation
+    fid_per_epoch = training_config.num_epochs // config.fid.fid_times
     if config.fid.on_use:
         fid_evaluator = get_fid_evaluater(config, p_sample_step, logger, latent_manager)
         # handle just_evaluate
@@ -567,7 +579,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             # vis = make_grid_visualization(vis)
             # logger.log_image(1, {"vis_sample": vis[0]})
             fid_score_ema = fid_evaluator(state, ema_only=True)
-            return state
+            return fid_score_ema
 
     ##################### handling teacher sanity #######################
     p_sample_step_teacher = jax.pmap(
@@ -619,7 +631,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         
         if (
             epoch == 0
-            or (epoch + 1) % training_config.eval_per_epoch == 0
+            or (epoch + 1) % training_config.sample_per_ep == 0
         ):
             log_for_0("Sample epoch {}...".format(epoch))
             vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=False)
@@ -641,10 +653,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             train_metrics.update(metrics)
 
             if epoch == epoch_offset and n_batch == 0:
-                logging.info(
+                log_for_0(
                     "p_train_step compiled in {}s".format(timer.elapse_with_reset())
                 )
-                logging.info("Initial compilation completed. Reset timer.")
+                log_for_0("Initial compilation completed. Reset timer.")
 
             step = epoch * steps_per_epoch + n_batch
             ep = epoch + n_batch / steps_per_epoch
@@ -654,31 +666,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
                     summary = train_metrics.compute_and_reset()
                     summary["steps_per_second"] = training_config.log_per_step / timer.elapse_with_reset()
                     summary.update({"ep": ep, "step": step})
+                    assert not math.isnan(summary["loss"]), f"loss is nan at step {step}"
                     logger.log_dict(step + 1, summary)
-
-        # # Show training visualization
-        # if (epoch + 1) % training_config.visualize_per_epoch == 0:
-        #     vis = visualize_cifar_batch(vis)
-        #     logger.log_image(step + 1, {"vis_train": vis[0]})
-
-        # Show samples (eval)
-        # if (
-        #     epoch == 0
-        #     or (epoch + 1) % training_config.eval_per_epoch == 0
-        # ):
-        #     log_for_0("Sample epoch {}...".format(epoch))
-        #     vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=False)
-        #     vis = jax.device_get(vis)
-        #     vis = float_to_uint8(vis)
-        #     # vis = make_grid_visualization(vis)
-        #     # logger.log_image(step + 1, {"vis_sample": vis[0]})
-        #     for i in range(7):
-        #         logger.log_image(step + 1, {f"vis_sample_{i}": vis[i]})
-        #     vis = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, ema=True)
-        #     vis = jax.device_get(vis)
-        #     vis = float_to_uint8(vis)
-        #     for i in range(7):
-        #         logger.log_image(step + 1, {f"vis_sample_ema_{i}": vis[i]})
 
 
         # save checkpoint
@@ -691,7 +680,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
                 save_checkpoint(state, workdir)
 
         if config.fid.on_use and (
-            (epoch + 1) % config.fid.fid_per_epoch == 0
+            (epoch + 1) % fid_per_epoch == 0
             or (epoch + 1) == training_config.num_epochs
         ):
             fid_score_ema = fid_evaluator(state)
