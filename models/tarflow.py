@@ -264,7 +264,8 @@ class NormalizingFlow(nn.Module):
                 rng, rng_used = safe_split(rng)
                 next_x, _, _, _ = self.blocks[i].forward(current_x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
                 zs.append(next_x)
-                current_x = jax.lax.stop_gradient(next_x) # stop grad before feeding into next block. TODO: try to remove this.
+                # current_x = jax.lax.stop_gradient(next_x) # stop grad before feeding into next block.
+                current_x = next_x # no sg
                 del rng_used
 
             zs = jnp.stack(zs, axis=0)
