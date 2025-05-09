@@ -37,23 +37,10 @@ def get_config():
     # Model
     config.model = model = ml_collections.ConfigDict()
     model.name = 'InvalidModel'
-    # model.image_size = 32
-    # model.out_channels = 3
-    # model.base_width = 128
-    # model.n_T = 18  # inference steps
-    # model.dropout = 0.13
-    # model.use_aug_label = False # default: no aug
-    # model.net_type = "ncsnppedm"
 
     # Augmentation
     config.aug = aug = ml_collections.ConfigDict()
     aug.use_edm_aug = False # default: no aug
-
-    # Consistency training
-    config.ct = ct = ml_collections.ConfigDict()
-    ct.start_ema = 0.9
-    ct.start_scales = 2
-    ct.end_scales = 150
 
     # Dataset
     config.dataset = dataset = ml_collections.ConfigDict()
@@ -71,12 +58,13 @@ def get_config():
     # Eval fid
     config.fid = fid = ml_collections.ConfigDict()
     fid.num_samples = 50000
-    fid.fid_per_epoch = 100
+    # fid.fid_per_epoch = 100
     fid.on_use = True
-    fid.device_batch_size = 2
+    fid.device_batch_size = 8 # default (for v3-8)
     fid.cache_ref = (
        "/kmh-nfs-ssd-eu-mount/data/cached/zhh/imgnet_256_train_jax_stats_20250205.npz"
     )
+    fid.temperature = 1.0 # for Tarflow
     fid.label_cond = True
     fid.sanity_teacher = False
 
@@ -88,7 +76,7 @@ def get_config():
     training.weight_decay = 0.0
     training.adam_b1 = 0.9
     training.adam_b2 = 0.999
-    training.warmup_epochs = 200
+    # training.warmup_epochs = 200
     training.momentum = 0.9
     training.batch_size = 512
     training.shuffle_buffer_size = 16 * 1024
@@ -96,15 +84,13 @@ def get_config():
     training.num_epochs = 4000
     training.log_per_step = 100
     training.log_per_epoch = -1
-    training.eval_per_epoch = 100
-    training.visualize_per_epoch = 100
+    # training.eval_per_epoch = 100
     training.checkpoint_per_epoch = 200
     training.steps_per_eval = -1
     training.half_precision = False
     training.seed = 0  # init random seed
     training.wandb = True
     training.noise_level = 0.0
-    training.label_drop_rate = 0.1
     
     # others
     # config.wandb = True
@@ -116,6 +102,7 @@ def get_config():
     config.save_by_fid = False
     config.wandb_name = None
     config.wandb_notes = ""
+    config.search_cfg = False
     return config
 
 
