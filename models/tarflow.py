@@ -392,6 +392,7 @@ class TeacherStudent(nn.Module):
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
+    loss_weight: str = "uniform" # options: uniform, norm
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -491,7 +492,7 @@ class TeacherStudent(nn.Module):
         xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
         
-        # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3))
+        # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3)) # with full supervision
         assert xs.shape[0] % 2 == 0
         losses = jnp.mean((xs[1::2] - zs[2::2]) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
@@ -506,7 +507,10 @@ class TeacherStudent(nn.Module):
             loss_dict[f"norm_x_{i}"] = norm_x[i]
         for i in range(len(norm_z)): # teacher
             loss_dict[f"norm_z_{i}"] = norm_z[i]
-            
+        
+        if self.loss_weight == "norm":
+            selected_norm_z = norm_z[1::2]
+            losses /= selected_norm_z
         # losses /= (norm_x + norm_z)
         # losses *= jnp.mean(norm_x + norm_z)
         loss = jnp.sum(losses)

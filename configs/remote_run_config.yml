@@ -29,6 +29,8 @@ model:
     teacher_dropout: 0.0
     student_dropout: 0.1
     # prior_norm: 0.5 # not supported now
+
+    loss_weight: norm # options: norm, uniform
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
     dropout: 0.0 # TODO: check this dp
@@ -51,4 +53,4 @@ load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250418_141
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.1 T jump2 dp0.1 ema0.9999"
+wandb_notes: "noise 0.1 T jump2 dp0.1 ema0.9999 + loss weight"
