@@ -21,10 +21,7 @@ This file is intentionally kept short. The majority for logic is in libraries
 that can be easily tested and imported in Colab.
 """
 
-import os
-from absl import app
-from absl import flags
-from absl import logging
+from absl import app, flags
 from ml_collections import config_flags
 
 import train
@@ -68,18 +65,54 @@ def main(argv):
     def f():
         if FLAGS.debug:
             with jax.disable_jit():
-                train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+                return train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
         else:
-            train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+            return train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
-    f()
+    def search_cfg():
+        if c.just_evaluate and c.search_cfg:
+            first_search = [0.0, 1.0, 2.0] # modify this for your search.
+            search = first_search
+            shift = 0.5 # how exact your best cfg is
+            fid = {0.0: 87.88}
+            while True:
+                search = sorted(search)
+                for guidance in search:
+                    if guidance in fid:
+                        continue
+                    log_for_0("Guidance: %f", guidance)
+                    c.fid.guidance = guidance
+                    c.wandb_name = f"S3-cfg-x-{guidance}-5k" # modify this for wandb
+                    fid[guidance] = f()
+                    if fid[guidance] > 150: raise ValueError("FID is too high, please check your config.")
+                best_cfg = sorted(fid.items(), key=lambda x: x[1])[0][0]
+                # special case: if the best cfg is the first or last one
+                if best_cfg == search[-1]:
+                    smaller = max([x for x in fid if x < best_cfg])
+                    if best_cfg - smaller < shift:
+                        search.append((smaller + best_cfg) / 2)
+                    search.append(2 * best_cfg - smaller)
+                elif best_cfg == search[0]:
+                    greater = min([x for x in fid if x > best_cfg])
+                    if greater - best_cfg < shift:
+                        search.append((greater + best_cfg) / 2)
+                    search.append(2 * best_cfg - greater)
+                else:
+                    # normal case
+                    # find the closest cfgs
+                    greater = min([x for x in fid if x > best_cfg])
+                    smaller = max([x for x in fid if x < best_cfg])
+                    if greater - best_cfg > shift:
+                        search.append((greater + best_cfg) / 2)
+                    if best_cfg - smaller > shift:
+                        search.append((smaller + best_cfg) / 2)
+                if len(search) == len(fid):
+                    log_for_0(f"Best cfg: {best_cfg}, FID: {fid[best_cfg]}")
+                    return
+        else: 
+            f()
 
-    # if not c.just_evaluate: raise SystemError(f"please modify main.py!!!")
-    # for guidance in [1.5, 2.5]:
-    #     log_for_0("Guidance: %f", guidance)
-    #     c.fid.guidance = guidance
-    #     c.wandb_name = f"Stu-default-cfg-ma=-{guidance}-5k"
-    #     f()
+    search_cfg()
 
 
 if __name__ == "__main__":
