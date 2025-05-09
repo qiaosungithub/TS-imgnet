@@ -526,7 +526,7 @@ def reverse(params,
     """
     used for teacher generation.
     """
-    assert guidance_method == "ma", f"only support x guidance, but got {guidance_method}"
+    guidance_method == "ma" # for teacher, we only use ma guidance. ablations on teacher should be done in NF.
     # print('param keys:', params['params'].keys())
     patch_num = nf.img_size // nf.patch_size
     num_patches = patch_num ** 2
