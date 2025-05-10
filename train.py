@@ -409,7 +409,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         if "v3" in ka:
             device_batch_size = 20
         if "v4" in ka:
-            device_batch_size = 40
+            device_batch_size = 20
 
 
     ######################################################################
@@ -582,33 +582,33 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             return fid_score_ema
 
     ##################### handling teacher sanity #######################
-    p_sample_step_teacher = jax.pmap(
-        partial(
-            sample_step,
-            model=model,
-            rng_init=rng,
-            device_batch_size=config.fid.device_batch_size,
-            guidance=config.fid.guidance,
-            guidance_method=config.fid.guidance_method,
-            noise_level=config.training.noise_level,
-            temperature=config.fid.temperature,
-            label_cond=config.fid.label_cond,
-            student=False,
-            just_prior=False,
-        ),
-        axis_name="batch",
-    )
-    # compile p_sample_step_teacher
-    log_for_0("Compiling p_sample_step_teacher...")
-    timer = Timer()
-    lowered = p_sample_step_teacher.lower(
-        params={"params": state.params, "batch_stats": {}},
-        sample_idx=vis_sample_idx,
-    )
-    p_sample_step_teacher = lowered.compile()
-    log_for_0("p_sample_step_teacher compiled in {}s".format(timer.elapse_with_reset()))
-
     if config.fid.sanity_teacher:
+        p_sample_step_teacher = jax.pmap(
+            partial(
+                sample_step,
+                model=model,
+                rng_init=rng,
+                device_batch_size=config.fid.device_batch_size,
+                guidance=config.fid.guidance,
+                guidance_method=config.fid.guidance_method,
+                noise_level=config.training.noise_level,
+                temperature=config.fid.temperature,
+                label_cond=config.fid.label_cond,
+                student=False,
+                just_prior=False,
+            ),
+            axis_name="batch",
+        )
+        # compile p_sample_step_teacher
+        log_for_0("Compiling p_sample_step_teacher...")
+        timer = Timer()
+        lowered = p_sample_step_teacher.lower(
+            params={"params": state.params, "batch_stats": {}},
+            sample_idx=vis_sample_idx,
+        )
+        p_sample_step_teacher = lowered.compile()
+        log_for_0("p_sample_step_teacher compiled in {}s".format(timer.elapse_with_reset()))
+
         fid_evaluator_T = get_fid_evaluater(config, p_sample_step_teacher, logger, latent_manager)
         # eval teacher fid and log
         log_for_0("evaluating teacher fid...")
@@ -644,6 +644,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             vis = float_to_uint8(vis)
             for i in range(7):
                 logger.log_image(step + 1, {f"vis_sample_ema_{i}": vis[i]})
+            del vis
         
         # training
         train_metrics = MyMetrics(reduction="last")
