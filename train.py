@@ -641,6 +641,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             vis = float_to_uint8(vis)
             for i in range(7):
                 logger.log_image(step + 1, {f"vis_sample_ema_{i}": vis[i]})
+            del vis
         
         # training
         train_metrics = MyMetrics(reduction="last")
