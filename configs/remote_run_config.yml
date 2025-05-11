@@ -24,9 +24,9 @@ training:
     ema_schedule: const # or edm
     lr_schedule: const
 model:
-    name: TSNF_Small_p2_b8_l8 # 118M
+    name: TSNF_Small_p2_b8_l8_S_2
     teacher_dropout: 0.0
-    student_dropout: 0.1
+    # student_dropout: 0.1 # not supported now
     # prior_norm: 0.5 # not supported now
 
     loss_weight: norm # options: norm, uniform
@@ -40,7 +40,7 @@ fid:
     # num_samples: 50000 # 50k
     num_samples: 5000
     guidance: 0.0 # 0 for with label
-    guidance_method: x
+    # guidance_method: x # not supported now
     # sanity_teacher: True
 
 # load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250411_151116_hts34m_kmh-tpuvm-v3-32-1__b_lr_ep_torchvision_r50_eval/checkpoint_800640 # p2b8l8 160ep noise 0.05 # FID-5k: 86.4; IS-5k: 15.4

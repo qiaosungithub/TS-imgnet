@@ -250,7 +250,6 @@ class DiT(nn.Module):
     mlp_ratio: float = 4.0
     class_dropout_prob: float = 0.1
     num_classes: int = 1000
-    learn_sigma: bool = True
 
     def setup(self):
         input_size = self.input_size
@@ -262,13 +261,12 @@ class DiT(nn.Module):
         mlp_ratio = self.mlp_ratio
         class_dropout_prob = self.class_dropout_prob
         num_classes = self.num_classes
-        learn_sigma = self.learn_sigma
-        self.out_channels = in_channels * 2 if learn_sigma else in_channels
+        self.out_channels = in_channels
 
         self.x_embedder = PatchEmbed(
             input_size, patch_size, in_channels, hidden_size, bias=True
         )
-        self.t_embedder = TimestepEmbedder(hidden_size)
+        # self.t_embedder = TimestepEmbedder(hidden_size) # not used
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
@@ -288,7 +286,7 @@ class DiT(nn.Module):
         """
         x: (N, T, patch_size**2 * C)
         ---
-        return: (N, C, H, W)
+        return: (N, H, W, C)
         """
         c = self.out_channels
         p = self.x_embedder.patch_size[0]
@@ -300,31 +298,28 @@ class DiT(nn.Module):
         imgs = x.reshape((x.shape[0], h * p, h * p, c))
         return imgs
 
-    def __call__(self, x, t, y, train=False, key=None):
+    def __call__(self, x, y, train=False, key=None):
         """
-        __call__ pass of DiT.
-        x: (B, H, W, C) input noisy data
-        t: (B,) diffusion timesteps
+        modified version from DiT.
+        x: (B, T, C) input patchified image
         y: (B,) class labels
         ---
-        return: (B, H, W, 2*C)
+        return: (B, T, C)
         """
         # x = x.transpose((0, 3, 1, 2))                   # (N, C, H, W)
-        assert x.shape[3] < 7, "likely you miss the transpose, get x.shape = {}".format(
-            x.shape
-        )
+        # assert x.shape[3] < 7, "likely you miss the transpose, get x.shape = {}".format(
+        #     x.shape
+        # )
+        x = self.unpatchify(x)  # (N, H, W, C)
 
         x = (
             self.x_embedder(x) + self.pos_embed_func()
         )  # (N, T, D), where T = H * W / patch_size ** 2
-        t = self.t_embedder(t)  # (N, D)
-        # assert False, f"y:{y}"
         y = self.y_embedder(y, train=train, rng=key)  # (N, D)
-        c = t + y  # (N, D)
+        c = y
         for block in self.blocks.layers:
             x = block(x, c)  # (N, T, D)
         x = self.final_layer(x, c)  # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)  # (N, H, W, out_channels)
         return x
 
     def forward_with_cfg(self, x, t, y, cfg_scale):

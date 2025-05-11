@@ -114,32 +114,18 @@ def reverse_block(
 
 def reverse_block_student(
     params,
-    block: MetaBlock, 
+    block: DiT, 
     x: jnp.ndarray, 
     y: jnp.ndarray | None = None,
-    temp: float = 1.0, 
-    which_cache: str = 'cond', 
     guidance: float = 0,
-    guidance_method: str = "x", # options: ['x', 'ma']
-    train: bool = False):
-    
-    x_out, _, alpha, mu = block.apply(params, x, y, temp, which_cache, train, method=block.forward)
+    train: bool = False
+):
+    assert not train
+    x_out = block.apply(params, x, y, train=train)
     if guidance > 0:
-        if guidance_method == "x":
-            x_uncond, _, _, _ = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
-            x_out = (1 + guidance) * x_out - guidance * x_uncond # simple guidance.
-        elif guidance_method == "ma":
-            B, T, C = x.shape
-            # guidance = guidance * jnp.arange(0, T, dtype=jnp.float32) / (T - 1)
-            guidance = guidance * jnp.ones((T,), dtype=jnp.float32)
-            guidance = guidance.reshape(1, T, 1)
-            x_uncond, _, alpha_uncond, mu_uncond = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
-            alpha = (1 + guidance) * alpha - guidance * alpha_uncond
-            mu = (1 + guidance) * mu - guidance * mu_uncond
-            assert block.mode == "reverse"
-            x_in = block.permutation(x)
-            x_out = x_in * jnp.exp(alpha) + mu
-            x_out = block.permutation(x_out, inverse=True)
+        y_null = jnp.array([block.num_classes] * x.shape[0], dtype=jnp.int32)
+        x_uncond = block.apply(params, x, y_null, train=train)
+        x_out = (1 + guidance) * x_out - guidance * x_uncond # simple guidance.
     
     return x_out
 
@@ -387,6 +373,49 @@ class ViTStudent(nn.Module):
     num_classes: int = 1000
     dtype: Any = jnp.float32
     class_dropout_prob: float = 0.1
+    # TODO: add dropout
+
+    def setup(self):
+        self.blocks = [
+            DiT(
+                input_size=self.img_size,
+                patch_size=self.patch_size,
+                in_channels=self.out_channels,
+                hidden_size=self.channels,
+                depth=self.num_layers,
+                num_heads=self.num_heads,
+                class_dropout_prob=self.class_dropout_prob,
+                num_classes=self.num_classes,
+            ) for _ in range(self.num_blocks)
+        ]
+    
+    def forward_with_sg(
+        self,
+        x: jnp.ndarray,
+        y: jnp.ndarray | None = None,
+        train: bool = True,
+        rng = None,
+    ):
+        """
+        used for student traning.
+        input: x, the output of teacher (latent)
+        Return: a sequence of output of student, from latent to image
+        """
+        B, T, C = x.shape
+        
+        zs = []
+        current_x = x
+        
+        for i in range(self.num_blocks):
+            rng, rng_used = safe_split(rng)
+            next_x = self.blocks[i](current_x, y, train=train, key=rng_used)
+            zs.append(next_x)
+            current_x = next_x
+            del rng_used
+        
+        zs = jnp.stack(zs, axis=0)
+        assert zs.shape == (self.num_blocks, B, T, C), f"zs shape: {zs.shape}, {B}, {T}, {C}"
+        return zs
 
     
 class TeacherStudent(nn.Module):
@@ -394,7 +423,7 @@ class TeacherStudent(nn.Module):
     
     img_size: int
     out_channels: int
-    channels: int
+    channels: int # teacher hidden dim
     patch_size: int
     num_layers: int
     num_heads: int
@@ -403,16 +432,18 @@ class TeacherStudent(nn.Module):
     num_classes: int = 1000
     dtype: Any = jnp.float32
     teacher_dropout: float = 0.0
-    student_dropout: float = 0.0
+    # student_dropout: float = 0.0 # not supported for now
     label_drop_rate: float = 0.1
-    mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
     loss_weight: str = "uniform" # options: uniform, norm
+    # ----------------------- student config -----------------------
+    student_channels: int # ViT hidden dim
+    student_num_layers: int = 12 # per block
+    student_num_heads: int = 6
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
-        assert self.mode == "reverse"
         self.teacher = NormalizingFlow(
             img_size=self.img_size,
             out_channels=self.out_channels,
@@ -429,21 +460,17 @@ class TeacherStudent(nn.Module):
             prior_norm=self.prior_norm,
         )
         # the order of student is: first block corresponds to noise end. It is reverse of teacher.
-        self.student = NormalizingFlow(
+        self.student = ViTStudent(
             img_size=self.img_size,
             out_channels=self.out_channels,
-            channels=self.channels,
+            channels=self.student_channels,
             patch_size=self.patch_size,
-            num_layers=int(self.num_layers),
-            num_heads=self.num_heads,
-            num_blocks=self.num_blocks,
-            reverse_perm=self.num_blocks-1,
+            num_layers=self.student_num_layers,
+            num_heads=self.student_num_heads,
+            num_blocks=self.num_blocks // 2, # use jump 2 supervision
             num_classes=self.num_classes,
             dtype=self.dtype,
-            dropout=self.student_dropout,
-            mode=self.mode,
             debug=self.debug,
-            prior_norm=self.prior_norm,
         )
         
     def patchify(self, x):
@@ -462,16 +489,6 @@ class TeacherStudent(nn.Module):
         x = x.transpose(0, 1, 3, 2, 4, 5)
         x = x.reshape(B, self.img_size, self.img_size, self.out_channels)
         return x
-    
-    def calc_student_reverse(self, x, y, temp: float = 1.0, which_cache: str = 'cond', train: bool = False):
-        raise LookupError("not used for now")
-        _, _, z = self.student.reverse(x, y, temp=temp, which_cache=which_cache, train=train)
-        return z
-    
-    def calc_student_forward(self, x, y, temp: float = 1.0, which_cache: str = 'cond', train: bool = False):
-        raise LookupError("not used for now")
-        _, _, zs, _, _ = self.student(x, y, temp=temp, which_cache=which_cache, train=train)
-        return zs[-1]
     
     def calc_teacher_forward(self, x, y, temp: float = 1.0, which_cache: str = 'cond', train: bool = True):
         # used for denoise. The loss here is logp.
@@ -515,10 +532,12 @@ class TeacherStudent(nn.Module):
         # xs: from latent (not contained) to image
         
         # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3)) # with full supervision
+        full_z_to_display = zs
+        zs = zs[2:2] # only num_blocks // 2 zs are used for loss.
         assert xs.shape[0] % 2 == 0
-        losses = jnp.mean((xs[1::2] - zs[2::2]) ** 2, axis=(1, 2, 3))
+        losses = jnp.mean((xs - zs) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
-        norm_z = jnp.mean(zs[1:] ** 2, axis=(1, 2, 3))
+        norm_z = jnp.mean(zs ** 2, axis=(1, 2, 3))
         norm_x = jax.lax.stop_gradient(norm_x)
         norm_z = jax.lax.stop_gradient(norm_z)
         
@@ -526,20 +545,19 @@ class TeacherStudent(nn.Module):
         for i in range(len(losses)):
             loss_dict[f"block_{i}"] = losses[i]
         for i in range(len(norm_x)): # student
-            loss_dict[f"norm_x_{i}"] = norm_x[i]
+            loss_dict[f"norm_x_{i*2}"] = norm_x[i]
         for i in range(len(norm_z)): # teacher
-            loss_dict[f"norm_z_{i}"] = norm_z[i]
+            loss_dict[f"norm_z_{i*2}"] = norm_z[i]
         
         if self.loss_weight == "norm":
-            selected_norm_z = norm_z[1::2]
+            selected_norm_z = norm_z
             losses /= selected_norm_z
         # losses /= (norm_x + norm_z)
         # losses *= jnp.mean(norm_x + norm_z)
         loss = jnp.sum(losses)
-            
         loss_dict['loss'] = loss
-        
-        return loss, loss_dict, zs
+
+        return loss, loss_dict, full_z_to_display
 
 
 def reverse(params,
@@ -573,7 +591,6 @@ def reverse(params,
                 permutation=PermutationFlip(i % 2 == 1),
                 debug=nf.debug,
             ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
-        # print("mean during layer:", x.mean())
     x = nf.unpatchify(x)
     return x
 
@@ -581,31 +598,23 @@ def reverse_student(params,
             nf: TeacherStudent,
             x: jnp.ndarray,
             y: jnp.ndarray | None = None,
-            temp: float = 1.0,
             guidance: float = 0,
-            guidance_method: str = "x", # options: ['x', 'ma']
-            which_cache: str = 'cond',
+            # guidance_method: str = "x", # options: ['x', 'ma']
             train: bool = False):
-    print('param keys:', params['params'].keys())
-    patch_num = nf.img_size // nf.patch_size
-    num_patches = patch_num ** 2
-    in_channels = nf.out_channels * nf.patch_size * nf.patch_size
-    assert nf.mode == "reverse", f"only support reverse, but got {nf.mode}"
+    assert not train
+    # for ViT student, we only use x guidance. 
     # start loop. The order of student is the first block corresponds to noise end. It is reverse of teacher.
-    for i in range(nf.num_blocks):
+    for i in range(nf.num_blocks // 2):
         block_param = params['params']['student'][f'blocks_{i}']
-        x = reverse_block_student({"params": block_param}, MetaBlock(
-                in_channels=in_channels, 
-                channels=nf.channels, 
-                num_patches=num_patches, 
-                num_layers=int(nf.num_layers), 
-                num_heads=nf.num_heads, 
+        x = reverse_block_student({"params": block_param}, DiT(
+                input_size=nf.img_size,
+                patch_size=nf.patch_size,
+                in_channels=nf.out_channels, 
+                hidden_size=nf.student_channels, 
+                depth=nf.student_num_layers,
+                num_heads=nf.student_num_heads, 
                 num_classes=nf.num_classes, 
-                permutation=PermutationFlip((nf.num_blocks-1-i)%2==1),
-                mode=nf.mode,
-                debug=nf.debug,
-            ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance, guidance_method=guidance_method)
-        # print("mean during layer:", x.mean())
+            ), x, y, train=train, guidance=guidance)
     x = nf.unpatchify(x)
     return x
 
@@ -628,10 +637,11 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
     else:
         y = None
     
-    rev_fn = reverse_student if use_student else reverse
+    rev_fn = reverse_student if use_student else partial(reverse, temp=1.0, guidance_method=guidance_method)
     if label_cond:
-        x = rev_fn(params, model, z, y, guidance=guidance, guidance_method=guidance_method, temp=1.0)
+        x = rev_fn(params, model, z, y, guidance=guidance)
     else:
+        raise NotImplementedError
         x = rev_fn(params, model, z, y, guidance=guidance, guidance_method=guidance_method, temp=temperature)
     
     if noise_level == 0 or not denoise: return x
@@ -647,6 +657,7 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
     return x
 
 def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, temperature=1.0, label_cond=True):
+    raise DeprecationWarning("我还没改过, 懒得改.")
     # first teacher generate image, then flow using student to get latent. just for debug.
     patch_num = model.img_size // model.patch_size
     num_patches = patch_num ** 2
@@ -690,61 +701,20 @@ def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, gu
 
 NF_Debug = partial(
     NormalizingFlow, img_size=32, out_channels=4, channels=4, patch_size=2, num_layers=1, num_heads=1, num_blocks=1, debug=True,
+    # student_channels=8, student_num_layers=2, student_num_heads=1
 )
 
-NF_Base = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=768, patch_size=4, num_layers=4, num_heads=12, num_blocks=12,
-)
-
-NF_Small = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=4, num_layers=4, num_heads=6, num_blocks=12,
-)
-
-NF_Small_p2 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=4, num_heads=6, num_blocks=12,
-) # 91M
-
-NF_Small_p2_b6 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=4, num_heads=6, num_blocks=6,
-)
-
-NF_Small_p2_b2 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=4, num_heads=6, num_blocks=2,
-)
-
-# sqa add
+# standard teacher model
 NF_Small_p2_b8_l8 = partial(
     NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8,
 ) # 118M
 
-# for b4l8, 59M. DiT-B is 130M.
-
-NF_Small_p2_b16_l4 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=4, num_heads=6, num_blocks=16,
-) # 121M
-
-NF_Small_p2_b4_l16 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=16, num_heads=6, num_blocks=4,
-) # 115M
-
-NF_Small_p4_b8_l8 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=4, num_layers=8, num_heads=6, num_blocks=8,
-) # 117M
-
-NF_2x_p2_b4_l4 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=768, patch_size=2, num_layers=4, num_heads=12, num_blocks=4,
-) # 117M
-
-NF_2x_p2_b8_l4 = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=768, patch_size=2, num_layers=4, num_heads=12, num_blocks=8,
-) # 234M
-
-NF_Default = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=4, num_layers=8, num_heads=6, num_blocks=8,
+TSNF_Small_p2_b8_l8_S_2 = partial(
+    TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, student_channels=384, student_num_layers=12, student_num_heads=6
 )
 
-TSNF_Small_p2_b8_l8 = partial(
-    TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, mode="reverse",
+TSNF_debug = partial(
+    TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, student_channels=8, student_num_layers=2, student_num_heads=1
 )
 
 if __name__== "__main__":
