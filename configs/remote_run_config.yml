@@ -17,7 +17,6 @@ training:
     adam_b1: 0.9
     adam_b2: 0.95
     weight_decay: 0.0
-    label_drop_rate: 0.1
 
     # ema_halflife_kimg: 500 # edm
     # wandb: False # use this to disable wandb
@@ -29,6 +28,7 @@ model:
     teacher_dropout: 0.0
     student_dropout: 0.1
     # prior_norm: 0.5 # not supported now
+    label_drop_rate: 0.1
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
     dropout: 0.0 # TODO: check this dp
@@ -45,9 +45,9 @@ fid:
 load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250418_141406_ksxsun_kmh-tpuvm-v3-32-13_sqa_NF/checkpoint_800640 # 1024bs, lr8e-4, noise0.1  640ep. # FID-5k: 67.67; IS-5k: 21.33
 
 # load_from: /kmh-nfs-us-mount/logs/sqa/TS_imgnet/20250419_234424_52pr5f_kmh-tpuvm-v4-32-preemptible-yiyang__b_lr_ep_eval/checkpoint_237690 # student noise 0.05.
-load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250428_152316_cuwdj3_kmh-tpuvm-v3-32-1__b_lr_ep_eval/checkpoint_387810 # teacher noise 0.1, dp0.1, ema0.9999.
-search_cfg: True
-just_evaluate: True # use this to just evaluate the model (without training)
+# load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250428_152316_cuwdj3_kmh-tpuvm-v3-32-1__b_lr_ep_eval/checkpoint_387810 # teacher noise 0.1, dp0.1, ema0.9999.
+# search_cfg: True
+# just_evaluate: True # use this to just evaluate the model (without training)
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 

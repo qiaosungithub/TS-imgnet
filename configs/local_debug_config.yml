@@ -3,11 +3,11 @@ training:
     num_epochs: 320
     batch_size: 64
     learning_rate: 0.0008
-    sample_per_ep: 32
-    checkpoint_per_epoch: 32
+    sample_per_ep: 40
+    checkpoint_per_epoch: 40
 
     noise_level: 0.1
-    ema: 0.9999 # only for const schedule
+    ema: 0.9996 # only for const schedule
     ####################### end check ############################
 
     warmup_steps: 25000 # 20 ep for bs1024
@@ -17,7 +17,6 @@ training:
     adam_b1: 0.9
     adam_b2: 0.95
     weight_decay: 0.0
-    label_drop_rate: 0.1
 
     # ema_halflife_kimg: 500 # edm
     wandb: False # use this to disable wandb
@@ -29,8 +28,7 @@ model:
     teacher_dropout: 0.0
     student_dropout: 0.1
     # prior_norm: 0.5 # not supported now
-
-    loss_weight: norm # options: norm, uniform
+    label_drop_rate: 0.1
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
     dropout: 0.0 # TODO: check this dp
@@ -53,4 +51,4 @@ load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250418_141
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.1 T jump2 dp0.1 ema0.9999 + loss weight"
+wandb_notes: "eval student 4 (noise0.1, dp0.1, ema0.9999) cfg on x"
