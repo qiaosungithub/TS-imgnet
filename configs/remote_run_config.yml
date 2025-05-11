@@ -17,7 +17,6 @@ training:
     adam_b1: 0.9
     adam_b2: 0.95
     weight_decay: 0.0
-    label_drop_rate: 0.1
 
     # ema_halflife_kimg: 500 # edm
     # wandb: False # use this to disable wandb
@@ -31,6 +30,7 @@ model:
     # prior_norm: 0.5 # not supported now
 
     loss_weight: norm # options: norm, uniform
+    label_drop_rate: 0.1
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
     dropout: 0.0 # TODO: check this dp

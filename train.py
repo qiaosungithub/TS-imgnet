@@ -174,7 +174,7 @@ def compute_metrics(dict_losses):
     return metrics
 
 
-def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn, noise_level, dropout_rate=0.0, latent_manager: LatentManager = None):
+def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn, noise_level, latent_manager: LatentManager = None):
     """
     Perform a single training step.
     """
@@ -194,14 +194,7 @@ def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn,
     noise = jax.random.normal(rng_noise, images.shape)
     images = images + noise_level * noise
     
-    rng_label, rng_dropout = random.split(rng_dropout, 2)
-    
-    if dropout_rate > 0.0:
-        mask = jax.random.bernoulli(rng_label, dropout_rate, batch["label"].shape)
-        label = jnp.where(mask, -jnp.ones_like(batch["label"]), batch["label"])
-        # print(f"label: {label}", flush=True)
-    else:
-        label = batch["label"]
+    label = batch["label"]
     
     def loss_fn(wrt):
         """loss function used for training."""
@@ -509,7 +502,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             learning_rate_fn=learning_rate_fn,
             ema_scales_fn=ema_scales_fn,
             noise_level=config.training.noise_level,
-            dropout_rate=config.training.label_drop_rate,
             latent_manager=latent_manager,
         ),
         axis_name="batch",
