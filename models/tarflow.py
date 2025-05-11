@@ -153,7 +153,7 @@ class NormalizingFlow(nn.Module):
     num_heads: int
     num_blocks: int
     reverse_perm: int = 0 # whether we should reverse the order of perms
-    num_classes: int = 0
+    num_classes: int = 1000
     # teacher_nblocks: int = None
     load_pretrain_method: str = "skip"
     dtype: Any = jnp.float32
@@ -389,6 +389,7 @@ class TeacherStudent(nn.Module):
     dtype: Any = jnp.float32
     teacher_dropout: float = 0.0
     student_dropout: float = 0.0
+    label_drop_rate: float = 0.1
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
@@ -473,10 +474,12 @@ class TeacherStudent(nn.Module):
         """
         Student Train step.
         """
+        assert train
         
         rng = self.make_rng('dropout')
         rng, rng_used = safe_split(rng)
         rng, rng_used_2 = safe_split(rng)
+        rng, rng_label = safe_split(rng)
         
         # generate zs by teacher, from dataset images
         loss_1, loss_dict_1, zs, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=False, rng=rng_used)
@@ -487,6 +490,10 @@ class TeacherStudent(nn.Module):
         # here, the zs is from image to latent, num_blocks+1 z in total.
         zs = jax.lax.stop_gradient(zs)
         zs = jnp.flip(zs, axis=0) # flip to latent to image
+
+        # label dropout.
+        mask = jax.random.bernoulli(rng_label, self.label_drop_rate, y.shape)
+        y = jnp.where(mask, -jnp.ones_like(y), y)
         
         # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
         xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
@@ -519,7 +526,7 @@ class TeacherStudent(nn.Module):
         
         return loss, loss_dict, zs
 
-    
+
 def reverse(params,
             nf: TeacherStudent,
             x: jnp.ndarray,
