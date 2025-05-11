@@ -1,9 +1,7 @@
 # ZHH: we abstract all VAE utils here
 import torch, jax, os
-
-# import torch.nn as nn
-# import torch.nn.functional as F
 import torch.utils.data
+from jax import lax
 
 from diffusers.models import FlaxAutoencoderKL
 
@@ -35,23 +33,20 @@ class LatentManager:
 
     def get_decode_fn(self):
 
-        def dist_prepare_batch_data(batch):
-            # reshape (host_batch_size, 3, height, width) to
-            # (local_devices, device_batch_size, height, width, 3)
-            local_device_count = jax.local_device_count()
-
-            return_dict = {}
-            for k, v in batch.items():
-                v = v.reshape((local_device_count, -1) + v.shape[1:])
-                return_dict[k] = v
-            return return_dict
+        def decode_and_gather(vae_params, x):
+            x = self.vae.apply(
+                vae_params, x, return_dict=False, method=FlaxAutoencoderKL.decode
+            )[0]
+            x = lax.all_gather(x, axis_name="batch")
+            return x
 
         log_for_0("Compiling vae.apply...")
 
         z_dummy = jnp.ones(
             (
                 jax.local_device_count(),
-                self.batch_size * jax.process_count(),
+                # self.batch_size * jax.process_count(),
+                self.batch_size,
                 4,
                 self.latent_size,
                 self.latent_size,
@@ -60,8 +55,9 @@ class LatentManager:
         # p_batch = dist_prepare_batch_data(dict(z=z_dummy))
 
         p_vae_variable = jax_utils.replicate({"params": self.vae_params})
-        p_decod_func = partial(self.vae.apply, method=FlaxAutoencoderKL.decode)
-        p_decod_func = jax.pmap(p_decod_func, axis_name="batch")
+        # p_decod_func = partial(self.vae.apply, method=FlaxAutoencoderKL.decode)
+        # p_decod_func = jax.pmap(p_decod_func, axis_name="batch")
+        p_decod_func = jax.pmap(decode_and_gather, axis_name="batch")
 
         lowered = p_decod_func.lower(p_vae_variable, z_dummy)
         compiled_decod_func = lowered.compile()
@@ -70,11 +66,13 @@ class LatentManager:
         log_for_0(f"FLOPs (1e9): {Bflops}")
 
         def call_p_compiled_model_func(x, p_func, var):
-            x = dist_prepare_batch_data(dict(x=x))["x"]
-            x = p_func(var, x)
-            x = x.sample
+            # x = dist_prepare_batch_data(dict(x=x))["x"]
+            local_device_count = jax.local_device_count()
+            x = x.reshape((local_device_count, -1) + x.shape[1:]) # (local_device_count, device_bs, 4, 32, 32)
+            x = p_func(var, x) # (local_device_count, global_device_count, device_bs, 3, 256, 256)
+            x = x[0]
             x = x.reshape((-1,) + x.shape[2:])
-            return dict(sample=x)
+            return x
 
         call_compiled_decod_func = partial(
             call_p_compiled_model_func, p_func=compiled_decod_func, var=p_vae_variable
@@ -95,7 +93,7 @@ class LatentManager:
         return LatentDist(cached_value).sample(key=rng) * 0.18215
 
     def decode(self, latents):
-        return self.decode_fn(latents / 0.18215)["sample"]
+        return self.decode_fn(latents / 0.18215)
 
 
 class LatentDataset(torch.utils.data.Dataset):

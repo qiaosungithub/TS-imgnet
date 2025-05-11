@@ -259,9 +259,7 @@ def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_le
     images = generate(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, guidance_method=guidance_method, noise_level=noise_level, temperature=temperature, label_cond=label_cond, use_student=student)
     images = images.transpose((0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
     assert images.shape == (device_batch_size, 4, 32, 32)
-    images_all = lax.all_gather(images, axis_name="batch")  # each device has a copy
-    images_all = images_all.reshape(-1, *images_all.shape[2:])
-    return images_all
+    return images
 
 
 @partial(jax.pmap, axis_name="x")
@@ -288,9 +286,9 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=Fals
         params={"params": state.params if not ema else state.ema_params, "batch_stats": {}},
         sample_idx=sample_idx,
     )
-    images = images[0]
+    images = images.reshape(-1, *images.shape[2:])  # (B, C, H, W), here B is local_device_count * device_batch_size
     assert images.shape[1:] == (4, 32, 32), f"images.shape: {images.shape}"
-    samples = latent_manager.decode(images)
+    samples = latent_manager.decode(images) # (device_bs * global_device_count, 3, 256, 256)
     assert samples.shape[1:] == (3, 256, 256), f"samples.shape: {samples.shape}"
     # assert not jnp.any(
     #     jnp.isnan(samples)
@@ -373,7 +371,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
     ) % 4 == 0, "root path should be consistent with workdir"
 
     if config.training.wandb:
-        
         try:
             ka = re.search(
                 r"kmh-tpuvm-v[234]-(\d+)(-preemptible)?-(\d+)", workdir
@@ -409,7 +406,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         if "v3" in ka:
             device_batch_size = 20
         if "v4" in ka:
-            device_batch_size = 20
+            device_batch_size = 40
 
 
     ######################################################################
