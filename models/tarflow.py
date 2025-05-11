@@ -8,6 +8,7 @@ from functools import partial
 
 from utils.logging_utils import log_for_0
 from models.layers import safe_split, MetaBlock, PermutationFlip
+from models.models_DiT import DiT
 
 ModuleDef = Any
 # print = lambda *args, **kwargs : None
@@ -373,6 +374,20 @@ class NormalizingFlow(nn.Module):
         loss_dict = {'loss': loss, 'log_det': tot_logdet.mean(), 'log_prior': log_prior}
         
         return loss, loss_dict, xs, alphas, mus
+
+class ViTStudent(nn.Module):
+    # the default setting corresponds to DiT-S/2
+    img_size: int = 32
+    out_channels: int = 4
+    channels: int = 384 # hidden_channels
+    patch_size: int = 2
+    num_layers: int = 12
+    num_heads: int = 6
+    num_blocks: int = 4 # half of teacher blocks
+    num_classes: int = 1000
+    dtype: Any = jnp.float32
+    class_dropout_prob: float = 0.1
+
     
 class TeacherStudent(nn.Module):
     """Normalizing flow, teacher-student model."""
@@ -385,7 +400,7 @@ class TeacherStudent(nn.Module):
     num_heads: int
     num_blocks: int
     # perms: list[PermutationConfig]
-    num_classes: int = 0
+    num_classes: int = 1000
     dtype: Any = jnp.float32
     teacher_dropout: float = 0.0
     student_dropout: float = 0.0
