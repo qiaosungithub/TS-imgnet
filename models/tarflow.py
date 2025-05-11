@@ -438,7 +438,7 @@ class TeacherStudent(nn.Module):
     prior_norm: float = 1.0 # not supported for now
     loss_weight: str = "uniform" # options: uniform, norm
     # ----------------------- student config -----------------------
-    student_channels: int # ViT hidden dim
+    student_channels: int = 384 # ViT hidden dim
     student_num_layers: int = 12 # per block
     student_num_heads: int = 6
     
@@ -470,7 +470,6 @@ class TeacherStudent(nn.Module):
             num_blocks=self.num_blocks // 2, # use jump 2 supervision
             num_classes=self.num_classes,
             dtype=self.dtype,
-            debug=self.debug,
         )
         
     def patchify(self, x):
@@ -523,17 +522,18 @@ class TeacherStudent(nn.Module):
         zs = jax.lax.stop_gradient(zs)
         zs = jnp.flip(zs, axis=0) # flip to latent to image
 
-        # label dropout.
-        mask = jax.random.bernoulli(rng_label, self.label_drop_rate, y.shape)
-        y = jnp.where(mask, -jnp.ones_like(y), y)
+        # this is already done in models_DiT.py
+        # # label dropout.
+        # mask = jax.random.bernoulli(rng_label, self.label_drop_rate, y.shape)
+        # y = jnp.where(mask, -jnp.ones_like(y), y)
         
         # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
-        xs = self.student.forward_with_sg(zs[0], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # lyy's smart loss
+        xs = self.student.forward_with_sg(zs[0], y, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
         
         # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3)) # with full supervision
         full_z_to_display = zs
-        zs = zs[2:2] # only num_blocks // 2 zs are used for loss.
+        zs = zs[2::2] # only num_blocks // 2 zs are used for loss.
         assert xs.shape[0] % 2 == 0
         losses = jnp.mean((xs - zs) ** 2, axis=(1, 2, 3))
         norm_x = jnp.mean(xs ** 2, axis=(1, 2, 3))
@@ -711,7 +711,7 @@ NF_Small_p2_b8_l8 = partial(
 
 TSNF_Small_p2_b8_l8_S_2 = partial(
     TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, student_channels=384, student_num_layers=12, student_num_heads=6
-)
+) # total 248M. student 130M
 
 TSNF_debug = partial(
     TeacherStudent, img_size=32, out_channels=4, channels=384, patch_size=2, num_layers=8, num_heads=6, num_blocks=8, student_channels=8, student_num_layers=2, student_num_heads=1
