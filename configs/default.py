@@ -95,6 +95,7 @@ def get_config():
     # others
     # config.wandb = True
     config.load_from = ""
+    config.load_teacher_from = ""
     config.pretrain = ""
     config.just_evaluate = False
     config.eval_teacher = False
