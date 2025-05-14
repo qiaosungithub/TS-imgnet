@@ -674,7 +674,7 @@ def generate_prior(params, model: TeacherStudent, rng, n_sample, noise_level, gu
     
 
 NF_Debug = partial(
-    NormalizingFlow, img_size=32, out_channels=4, channels=4, patch_size=2, num_layers=1, num_heads=1, num_blocks=1, debug=True,
+    NormalizingFlow, img_size=32, out_channels=4, channels=4, patch_size=2, num_layers=1, num_heads=1, num_blocks=2, debug=True,
 )
 
 NF_Base = partial(
@@ -726,6 +726,10 @@ NF_2x_p2_b8_l4 = partial(
 
 NF_Default = partial(
     NormalizingFlow, img_size=32, out_channels=4, channels=384, patch_size=4, num_layers=8, num_heads=6, num_blocks=8,
+)
+
+TS_Debug = partial(
+    TeacherStudent, img_size=32, out_channels=4, channels=4, patch_size=2, num_layers=1, num_heads=1, num_blocks=2, debug=True, mode="reverse",
 )
 
 TSNF_Small_p2_b8_l8 = partial(

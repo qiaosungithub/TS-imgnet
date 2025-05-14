@@ -103,6 +103,7 @@ def get_config():
     config.wandb_name = None
     config.wandb_notes = ""
     config.search_cfg = False
+    config.load_teacher_from = ""
     return config
 
 

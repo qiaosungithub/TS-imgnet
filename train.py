@@ -229,8 +229,8 @@ def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn,
     metrics = compute_metrics(dict_losses)
     metrics["lr"] = lr
     metrics["ema_decay"] = ema_decay
-    # return state, metrics, ret_images
-    return state, metrics
+    return state, metrics, ret_images
+    # return state, metrics
 
 
 def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_level, guidance, guidance_method, temperature=1.0, label_cond=True, student=True, just_prior=False):
@@ -639,7 +639,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
         train_metrics = MyMetrics(reduction="last")
         for n_batch, batch in enumerate(train_loader):
             batch = prepare_batch_data(batch)
-            state, metrics = p_train_step(state, batch)
+            state, metrics, zs = p_train_step(state, batch)
+            assert not jnp.any(jnp.isnan(zs)), f"zs has nan: {jnp.isnan(zs).any()}"
+            assert not jnp.any(jnp.isinf(zs)), f"zs has inf: {jnp.isinf(zs).any()}"
             train_metrics.update(metrics)
 
             if epoch == epoch_offset and n_batch == 0:
