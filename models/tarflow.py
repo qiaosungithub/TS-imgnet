@@ -127,10 +127,12 @@ def reverse_block_student(
         if guidance_method == "x":
             x_uncond, _, _, _ = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
             x_out = (1 + guidance) * x_out - guidance * x_uncond # simple guidance.
-        elif guidance_method == "ma":
+        elif guidance_method.startswith("ma"):
             B, T, C = x.shape
-            # guidance = guidance * jnp.arange(0, T, dtype=jnp.float32) / (T - 1)
-            guidance = guidance * jnp.ones((T,), dtype=jnp.float32)
+            if guidance_method == "ma":
+                guidance = guidance * jnp.arange(0, T, dtype=jnp.float32) / (T - 1)
+            elif guidance_method == "ma=":
+                guidance = guidance * jnp.ones((T,), dtype=jnp.float32)
             guidance = guidance.reshape(1, T, 1)
             x_uncond, _, alpha_uncond, mu_uncond = block.apply(params, x, None, temp, which_cache, train, method=block.forward)
             alpha = (1 + guidance) * alpha - guidance * alpha_uncond
