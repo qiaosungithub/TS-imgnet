@@ -71,10 +71,10 @@ def main(argv):
 
     def search_cfg():
         if c.just_evaluate and c.search_cfg:
-            first_search = [0.0, 2.0, 4.0] # modify this for your search.
+            first_search = [1.0, 2.0, 3.0] # modify this for your search.
             search = first_search
             shift = 0.5 # how exact your best cfg is
-            fid = {}
+            fid = {0.0: 85.66}
             while True:
                 search = sorted(search)
                 for guidance in search:
@@ -82,7 +82,7 @@ def main(argv):
                         continue
                     log_for_0("Guidance: %f", guidance)
                     c.fid.guidance = guidance
-                    c.wandb_name = f"S10-cfg-x-{guidance}-5k-ma" # modify this for wandb
+                    c.wandb_name = f"S10-cfg-{guidance}-5k-ma=" # modify this for wandb
                     fid[guidance] = f()
                     if fid[guidance] > 150: raise ValueError("FID is too high, please check your config.")
                 best_cfg = sorted(fid.items(), key=lambda x: x[1])[0][0]
