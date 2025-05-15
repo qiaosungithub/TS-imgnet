@@ -2,11 +2,11 @@ training:
     ############### you need to check every time #################
     num_epochs: 320
     batch_size: 1024
-    learning_rate: 0.0008
+    learning_rate: 0.0004
     sample_per_ep: 32
     checkpoint_per_epoch: 32
 
-    noise_level: 0.1
+    noise_level: 0.15
     ema: 0.9999 # only for const schedule
     ####################### end check ############################
 
@@ -29,8 +29,10 @@ model:
     student_dropout: 0.1
     # prior_norm: 0.5 # not supported now
 
-    loss_weight: norm # options: norm, uniform
+    loss_weight: uniform # options: norm, uniform
     label_drop_rate: 0.1
+    clip_range_teacher: 1.0
+    clip_range_student: 2.0
 teacher: # for load teacher
     name: NF_Debug
     dropout: 0.0 # TODO: check this dp
@@ -43,16 +45,12 @@ fid:
     guidance_method: x
     # sanity_teacher: True
 
-# load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250411_151116_hts34m_kmh-tpuvm-v3-32-1__b_lr_ep_torchvision_r50_eval/checkpoint_800640 # p2b8l8 160ep noise 0.05 # FID-5k: 86.4; IS-5k: 15.4
-# load_teacher_from: /kmh-nfs-ssd-eu-mount/logs/sqa/sqa_Flow_matching/20250418_141406_ksxsun_kmh-tpuvm-v3-32-13_sqa_NF/checkpoint_800640 # 1024bs, lr8e-4, noise0.1  640ep. # FID-5k: 67.67; IS-5k: 21.33
+# load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250513_141944_n3u7rk_kmh-tpuvm-v4-32-preemptible-yiyang2__b_lr_ep_eval/checkpoint_800640 # clip 1, bs1024, noise 0.15
 
-# load_from: /kmh-nfs-us-mount/logs/sqa/TS_imgnet/20250419_234424_52pr5f_kmh-tpuvm-v4-32-preemptible-yiyang__b_lr_ep_eval/checkpoint_237690 # student noise 0.05.
-# load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250428_152316_cuwdj3_kmh-tpuvm-v3-32-1__b_lr_ep_eval/checkpoint_387810 # teacher noise 0.1, dp0.1, ema0.9999.
-# load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250509_185212_juim3r_kmh-tpuvm-v3-32-1__b_lr_ep_eval # bs1024, noise0.1, jump2, dp0.1, ema0.9999
-# load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250511_174805_chimg9_kmh-tpuvm-v3-32-13__b_lr_ep_eval/checkpoint_240192 # resume, 1024bs, n0.1, jump2, dp0.1, ema0.9999, loss weight, half nan
+# load_from: null
 # search_cfg: True
 # just_evaluate: True # use this to just evaluate the model (without training)
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "eval noise 0.1 T jump2 dp0.1 ema0.9999 resume check nan"
+wandb_notes: "noise 0.15 clip1 T jump2 dp0.1 ema0.9999"
