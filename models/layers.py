@@ -189,11 +189,12 @@ class MetaBlock(nn.Module):
     mode: str = "same" # options: same, reverse
 
     dtype: Any = jnp.float32
+    clip_range: float = None
     
     def setup(self):
         self.proj_in = torch_linear(features=self.channels, dtype=self.dtype)
-        self.pos_emebdding = self.param('pos_embedding', 
-                                        nn.initializers.normal(stddev=0.02), 
+        self.pos_embedding = self.param('pos_embedding',
+                                        nn.initializers.normal(stddev=0.02),
                                         (1, self.num_patches, self.channels))
         
         self.class_embedding = None
@@ -208,38 +209,6 @@ class MetaBlock(nn.Module):
             kernel_init=nn.initializers.zeros if not self.debug else nn.initializers.normal(stddev=0.01),
         bias_init=nn.initializers.zeros) 
         self.attn_mask = lambda: jnp.tril(jnp.ones((self.num_patches, self.num_patches), dtype=jnp.bool))
-
-    def forward_flatten(self,
-                        x: jnp.ndarray,
-                        y: jnp.ndarray | None = None,
-                        temp: float = 1.0,
-                        which_cache: str = 'cond',
-                        train: bool = True,
-                        rng = None):
-        raise DeprecationWarning
-        # for student use. image only forward. The input has been permuted.
-        x_proj = self.proj_in(x)
-        pos_embed = self.permutation(self.pos_emebdding)
-        x_proj = x_proj + pos_embed
-        if self.class_embedding is not None:
-            if y is not None:
-                mask = (y < 0).astype(jnp.float32).reshape(-1, 1, 1)
-                class_embed = (1 - mask) * self.class_embedding[y] + mask * self.class_embedding.mean(axis=0)
-                x_proj = x_proj + class_embed
-            else:
-                x_proj = x_proj + self.class_embedding.mean(axis=0)
-                
-        for block in self.blocks:
-            rng, rng_used = safe_split(rng)
-            x_proj, _, _ = block(x_proj, mask=self.attn_mask(), temp=temp, which_cache=which_cache, train=train, rng=rng_used)
-            del rng_used
-            
-        x_proj = self.proj_out(x_proj) # [B, T, 2*C]
-        x_proj = jnp.concatenate([jnp.zeros_like(x_proj[:, :1]), x_proj[:, :-1]], axis=1)
-        alpha, mu = jnp.split(x_proj, 2, axis=-1) 
-        assert self.mode == REV_ORDER_L2_EACH_BLOCK
-        x_new = x * jnp.exp(alpha) + mu
-        return x_new
         
     def forward(self, 
                 x: jnp.ndarray, 
@@ -256,11 +225,11 @@ class MetaBlock(nn.Module):
             which_cache: str
             train: bool
         forward with mu, alpha, jacobian. The input will be permuted in this function.
-        foward: *exp(alpha) + mu
+        forward: *exp(alpha) + mu
         """
         x_in = self.permutation(x)
         x = self.proj_in(x_in)
-        x = x + self.permutation(self.pos_emebdding) # [B, T, C]
+        x = x + self.permutation(self.pos_embedding) # [B, T, C]
         
         if self.class_embedding is not None:
             if y is not None:
@@ -278,6 +247,8 @@ class MetaBlock(nn.Module):
         x = self.proj_out(x) # [B, T, 2*C]
         x = jnp.concatenate([jnp.zeros_like(x[:, :1]), x[:, :-1]], axis=1)
         alpha, mu = jnp.split(x, 2, axis=-1)
+        if self.clip_range is not None:
+            alpha = jnp.clip(alpha, -self.clip_range, self.clip_range)
         if self.mode == "same":
             x_new = (x_in - mu) * jnp.exp(-alpha) # [B, T, C_in]
             log_jacob = - alpha.mean(axis=(1, 2))
@@ -312,7 +283,7 @@ class MetaBlock(nn.Module):
         x_in = jax.lax.dynamic_slice(x, (0, i, 0), (x.shape[0], 1, x.shape[2]))
         assert x_in.shape == (B, 1, C)
         x = self.proj_in(x_in)
-        pos_embed = self.permutation(self.pos_emebdding)
+        pos_embed = self.permutation(self.pos_embedding)
         assert pos_embed.shape == (1, T, x.shape[-1]), f'{pos_embed.shape}, {(1, T, x.shape[-1])}'
         x = x + jax.lax.dynamic_slice(pos_embed, (0, i, 0), (pos_embed.shape[0], 1, pos_embed.shape[2]))
         
@@ -329,8 +300,10 @@ class MetaBlock(nn.Module):
             x, k_cache[bi], v_cache[bi] = block(x, k_cache=k_cache[bi], v_cache=v_cache[bi], temp=temp, which_cache=which_cache, train=train, mask=mask)
         
         x = self.proj_out(x) # [B, 1, 2*C]
-        mu, alpha = jnp.split(x, 2, axis=-1)
-        return mu, alpha, k_cache, v_cache # [B, C_in]
+        alpha, mu = jnp.split(x, 2, axis=-1)
+        if self.clip_range is not None:
+            alpha = jnp.clip(alpha, -self.clip_range, self.clip_range)
+        return alpha, mu, k_cache, v_cache # [B, C_in]
 
     def reverse(
         self,

@@ -148,6 +148,7 @@ class NormalizingFlow(nn.Module):
     mode: str = "same" # options: same, reverse
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
+    clip_range: float = None
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -157,11 +158,6 @@ class NormalizingFlow(nn.Module):
         assert self.patch_size * patch_num == self.img_size, "img_size must be divisible by num_patches"
         
         judge = lambda idx: (idx + self.reverse_perm) % 2 == 1
-        
-        # if self.teacher_nblocks is not None:
-        #     log_for_0(f"teacher_nblocks: {self.teacher_nblocks}")
-        #     map_fn = get_map_fn(self.load_pretrain_method, self.teacher_nblocks, self.num_blocks)
-        #     judge = lambda idx: map_fn(idx) % 2 == 1
         
         log_for_0(f"judge result: {[judge(i) for i in range(self.num_blocks)]}")
         self.blocks = [
@@ -177,6 +173,7 @@ class NormalizingFlow(nn.Module):
                 mode=self.mode,
                 dropout=self.dropout,
                 debug=self.debug,
+                clip_range=self.clip_range,
             ) for i in range(self.num_blocks)
         ]
         
@@ -441,6 +438,8 @@ class TeacherStudent(nn.Module):
     student_channels: int = 384 # ViT hidden dim
     student_num_layers: int = 12 # per block
     student_num_heads: int = 6
+    # clip config
+    clip_range_teacher: float = None
     
     def setup(self):
         assert self.prior_norm == 1.0, f"prior_norm is not supported for now, but got {self.prior_norm}"
@@ -458,6 +457,7 @@ class TeacherStudent(nn.Module):
             dropout=self.teacher_dropout,
             debug=self.debug,
             prior_norm=self.prior_norm,
+            clip_range=self.clip_range_teacher,
         )
         # the order of student is: first block corresponds to noise end. It is reverse of teacher.
         self.student = ViTStudent(
@@ -590,6 +590,7 @@ def reverse(params,
                 num_classes=nf.num_classes, 
                 permutation=PermutationFlip(i % 2 == 1),
                 debug=nf.debug,
+                clip_range=nf.clip_range_teacher,
             ), x, y, temp=temp, which_cache=which_cache, train=train, guidance=guidance)
     x = nf.unpatchify(x)
     return x
