@@ -246,9 +246,9 @@ class MetaBlock(nn.Module):
         
         x = self.proj_out(x) # [B, T, 2*C]
         x = jnp.concatenate([jnp.zeros_like(x[:, :1]), x[:, :-1]], axis=1)
-        alpha, mu = jnp.split(x, 2, axis=-1)
         if self.clip_range is not None:
-            alpha = jnp.clip(alpha, -self.clip_range, self.clip_range)
+            x = jnp.clip(x, -self.clip_range, self.clip_range)
+        alpha, mu = jnp.split(x, 2, axis=-1)
         if self.mode == "same":
             x_new = (x_in - mu) * jnp.exp(-alpha) # [B, T, C_in]
             log_jacob = - alpha.mean(axis=(1, 2))
@@ -300,50 +300,10 @@ class MetaBlock(nn.Module):
             x, k_cache[bi], v_cache[bi] = block(x, k_cache=k_cache[bi], v_cache=v_cache[bi], temp=temp, which_cache=which_cache, train=train, mask=mask)
         
         x = self.proj_out(x) # [B, 1, 2*C]
-        alpha, mu = jnp.split(x, 2, axis=-1)
         if self.clip_range is not None:
-            alpha = jnp.clip(alpha, -self.clip_range, self.clip_range)
+            x = jnp.clip(x, -self.clip_range, self.clip_range)
+        alpha, mu = jnp.split(x, 2, axis=-1)
         return alpha, mu, k_cache, v_cache # [B, C_in]
-
-    def reverse(
-        self,
-        x: jnp.ndarray,
-        y: jnp.ndarray | None = None,
-        temp: float = 1.0,
-        which_cache: str = 'cond',
-        train: bool = False,
-    ):
-        """
-        reverse: (x-mu) * exp(-alpha)
-        """
-        raise LookupError("没用到？")
-        x = self.permutation(x)
-        B, T, C = x.shape
-        num_heads = self.num_heads
-        head_dim = self.channels // num_heads
-        k_cache, v_cache = [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=jnp.nan), "idx": 0} for _ in range(self.num_layers)], [{'cond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), 'uncond': jnp.full((B, T, num_heads, head_dim), fill_value=1e8), "idx": 0} for _ in range(self.num_layers)]
-        
-        def step_fn(i, vals):
-            x_step, log_jacob, k_cache_step, v_cache_step = vals
-            for obj in k_cache_step + v_cache_step:
-                obj["idx"] = i
-                
-            alpha_i, mu_i, k_cache_step, v_cache_step = self.reverse_step(x_step, i, y, k_cache_step, v_cache_step, temp, which_cache, train)
-            
-            x_sliced = jax.lax.dynamic_slice(x_step, (0, (i+1), 0), (x_step.shape[0], 1, x_step.shape[2]))
-            assert x_sliced.shape == (B, 1, C)
-            assert self.mode == REV_ORDER_L2_EACH_BLOCK
-            val = (x_sliced - mu_i) * jnp.exp(-alpha_i.astype(jnp.float32))
-            log_jacob -= alpha_i.mean(axis=(1, 2))
-            x_step = jax.lax.dynamic_update_slice(x_step, val, (0, (i+1), 0))
-            return x_step, log_jacob, k_cache_step, v_cache_step
-        
-        tot_log_jacob = jnp.zeros((B,), dtype=jnp.float32)
-        x, tot_log_jacob, _, _ = jax.lax.fori_loop(0, T - 1, step_fn, (x, tot_log_jacob, k_cache, v_cache))
-        
-        x = self.permutation(x, inverse=True)
-        
-        return x, tot_log_jacob
     
     def __call__(self, 
             x: jnp.ndarray, 
