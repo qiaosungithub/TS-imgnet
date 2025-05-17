@@ -44,7 +44,7 @@ fid:
     guidance_method: x # not supported now
     # sanity_teacher: True
 
-load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250513_141944_n3u7rk_kmh-tpuvm-v4-32-preemptible-yiyang2__b_lr_ep_eval/checkpoint_800640 # clip 1, bs1024, noise 0.15
+load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250516_154421_edg7t8_kmh-tpuvm-v4-32-preemptible-yiyang__b_lr_ep_eval/checkpoint_800640 # NF 47: bs1024, n0.15, clip ma 1, lr4e-4, 640ep
 
 # load_from: null
 # search_cfg: True
@@ -52,4 +52,4 @@ load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250513_141944_
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.15 clip a T vit S"
+wandb_notes: "noise 0.15 clip ma T vit S"
