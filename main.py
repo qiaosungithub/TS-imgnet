@@ -82,7 +82,7 @@ def main(argv):
                         continue
                     log_for_0("Guidance: %f", guidance)
                     c.fid.guidance = guidance
-                    c.wandb_name = f"vit-Stu-cfg-x-{guidance}-5k" # modify this for wandb
+                    c.wandb_name = f"vit-Sn0.15clipaT-cfg-x-{guidance}-5k" # modify this for wandb
                     fid[guidance] = f()
                     if fid[guidance] > 150: raise ValueError("FID is too high, please check your config.")
                 best_cfg = sorted(fid.items(), key=lambda x: x[1])[0][0]

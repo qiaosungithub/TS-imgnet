@@ -46,10 +46,10 @@ fid:
 
 load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250513_141944_n3u7rk_kmh-tpuvm-v4-32-preemptible-yiyang2__b_lr_ep_eval/checkpoint_800640 # clip 1, bs1024, noise 0.15
 
-# load_from: null
-# search_cfg: True
-# just_evaluate: True # use this to just evaluate the model (without training)
+load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250516_001557_qt7gtr_kmh-tpuvm-v3-32-1__b_lr_ep_eval
+search_cfg: True
+just_evaluate: True # use this to just evaluate the model (without training)
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.15 clip a T vit S"
+wandb_notes: "noise 0.15 clip a T vit S eval"
