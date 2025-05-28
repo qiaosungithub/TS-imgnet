@@ -216,7 +216,8 @@ class MetaBlock(nn.Module):
                 temp: float = 1.0, 
                 which_cache: str = 'cond', 
                 train: bool = True,
-                rng = None):
+                rng = None,
+        ):
         """
         Args:
             x: [B, T, C]

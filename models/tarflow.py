@@ -315,6 +315,7 @@ class NormalizingFlow(nn.Module):
                 which_cache: str = 'cond', 
                 train: bool = True,
                 rng = jax.random.PRNGKey(0),
+                cfg: float = 0.0,
         ):
         """
         Args:
@@ -330,12 +331,21 @@ class NormalizingFlow(nn.Module):
         alphas = []
         mus = []
 
+        guidance = jnp.arange(0, T, dtype=jnp.float32) / (T - 1)
+        guidance = guidance.reshape(1, T, 1)
+
         tot_logdet = 0.0
         for block in self.blocks:
             rng, rng_used = safe_split(rng)
-            x, logdet, alpha, mu = block.forward(x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
+            x_new, logdet, alpha, mu = block.forward(x, y, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
+            if cfg > 0:
+                _, _, alpha_uncond, mu_uncond = block.forward(x, None, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
+                alpha = (1 + guidance) * alpha - guidance * alpha_uncond
+                mu = (1 + guidance) * mu - guidance * mu_uncond
+                x_new = (x - mu) * jnp.exp(-alpha)
             alphas.append(alpha)
             mus.append(mu)
+            x = x_new
             xs.append(x)
             tot_logdet = tot_logdet + logdet
             del rng_used
@@ -434,6 +444,7 @@ class TeacherStudent(nn.Module):
     debug: bool = False
     prior_norm: float = 1.0 # not supported for now
     loss_weight: str = "uniform" # options: uniform, norm
+    teacher_guidance: float = 0.0
     # ----------------------- student config -----------------------
     student_channels: int = 384 # ViT hidden dim
     student_num_layers: int = 12 # per block
@@ -510,10 +521,10 @@ class TeacherStudent(nn.Module):
         rng = self.make_rng('dropout')
         rng, rng_used = safe_split(rng)
         rng, rng_used_2 = safe_split(rng)
-        rng, rng_label = safe_split(rng)
+        # rng, rng_label = safe_split(rng)
         
         # generate zs by teacher, from dataset images
-        loss_1, loss_dict_1, zs, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=False, rng=rng_used)
+        loss_1, loss_dict_1, zs, _, _ = self.teacher(x, y, temp=temp, which_cache=which_cache, train=False, rng=rng_used, cfg=self.teacher_guidance)
         del rng_used
         loss_dict = {}
 
@@ -526,12 +537,10 @@ class TeacherStudent(nn.Module):
         # # label dropout.
         # mask = jax.random.bernoulli(rng_label, self.label_drop_rate, y.shape)
         # y = jnp.where(mask, -jnp.ones_like(y), y)
-        
-        # xs, alphas, mus = self.student.forward_on_each_block(zs[:-1], y, temp=temp, which_cache=which_cache, train=train, rng=rng_used_2) # old loss
+
         xs = self.student.forward_with_sg(zs[0], y, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
-        
-        # losses = jnp.mean((xs - zs[1:]) ** 2, axis=(1, 2, 3)) # with full supervision
+
         full_z_to_display = zs
         zs = zs[2::2] # only num_blocks // 2 zs are used for loss.
 
@@ -552,8 +561,7 @@ class TeacherStudent(nn.Module):
         if self.loss_weight == "norm":
             selected_norm_z = norm_z
             losses /= selected_norm_z
-        # losses /= (norm_x + norm_z)
-        # losses *= jnp.mean(norm_x + norm_z)
+
         loss = jnp.sum(losses)
         loss_dict['loss'] = loss
 
