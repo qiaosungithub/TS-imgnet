@@ -33,7 +33,7 @@ model:
     label_drop_rate: 0.1
     clip_range_teacher: 1.0
 
-    teacher_guidance: 4.5
+    teacher_guidance: 3.0
 teacher: # for load teacher
     name: NF_Small_p2_b8_l8
     dropout: 0.0 # TODO: check this dp
@@ -54,4 +54,4 @@ load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250516_154421_
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.15 clip ma T (cfg 4.5) vit S"
+wandb_notes: "noise 0.15 clip ma T (cfg 3.0) vit S"

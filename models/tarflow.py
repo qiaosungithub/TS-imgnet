@@ -342,7 +342,9 @@ class NormalizingFlow(nn.Module):
                 _, _, alpha_uncond, mu_uncond = block.forward(x, None, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
                 alpha = (1 + guidance) * alpha - guidance * alpha_uncond
                 mu = (1 + guidance) * mu - guidance * mu_uncond
+                x = block.permutation(x_new)
                 x_new = (x - mu) * jnp.exp(-alpha)
+                x_new = block.permutation(x_new)
             alphas.append(alpha)
             mus.append(mu)
             x = x_new
@@ -540,6 +542,9 @@ class TeacherStudent(nn.Module):
 
         xs = self.student.forward_with_sg(zs[0], y, train=train, rng=rng_used_2) # lyy's smart loss
         # xs: from latent (not contained) to image
+
+        norm_prior = jnp.mean(zs[0] ** 2) # the first zs is the prior
+        loss_dict['norm_prior'] = norm_prior
 
         full_z_to_display = zs
         zs = zs[2::2] # only num_blocks // 2 zs are used for loss.
