@@ -332,7 +332,7 @@ class NormalizingFlow(nn.Module):
         mus = []
 
         guidance = jnp.arange(0, T, dtype=jnp.float32) / (T - 1)
-        guidance = guidance.reshape(1, T, 1)
+        guidance = guidance.reshape(1, T, 1) * cfg
 
         tot_logdet = 0.0
         for block in self.blocks:
@@ -342,8 +342,8 @@ class NormalizingFlow(nn.Module):
                 _, _, alpha_uncond, mu_uncond = block.forward(x, None, temp=temp, which_cache=which_cache, train=train, rng=rng_used)
                 alpha = (1 + guidance) * alpha - guidance * alpha_uncond
                 mu = (1 + guidance) * mu - guidance * mu_uncond
-                x = block.permutation(x_new)
-                x_new = (x - mu) * jnp.exp(-alpha)
+                x_new = block.permutation(x)
+                x_new = (x_new - mu) * jnp.exp(-alpha)
                 x_new = block.permutation(x_new)
             alphas.append(alpha)
             mus.append(mu)
