@@ -600,13 +600,16 @@ def reverse_student(params,
             x: jnp.ndarray,
             y: jnp.ndarray | None = None,
             guidance: float = 0,
+            guidance_interval = [],
             # guidance_method: str = "x", # options: ['x', 'ma']
-            train: bool = False):
+            train: bool = False,
+    ):
     assert not train
     # for ViT student, we only use x guidance. 
     # start loop. The order of student is the first block corresponds to noise end. It is reverse of teacher.
     for i in range(nf.num_blocks // 2):
         block_param = params['params']['student'][f'blocks_{i}']
+        g = guidance if i in guidance_interval else 0
         x = reverse_block_student({"params": block_param}, DiT(
                 input_size=nf.img_size,
                 patch_size=nf.patch_size,
@@ -615,12 +618,12 @@ def reverse_student(params,
                 depth=nf.student_num_layers,
                 num_heads=nf.student_num_heads, 
                 num_classes=nf.num_classes, 
-            ), x, y, train=train, guidance=guidance)
+            ), x, y, train=train, guidance=g)
     x = nf.unpatchify(x)
     return x
 
 # move this out from model for JAX compilation
-def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, guidance_method, temperature=1.0, label_cond=True, denoise=True, use_student=False):
+def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance, guidance_method, guidance_interval, temperature=1.0, label_cond=True, denoise=True, use_student=False):
     """
     Generate samples from the model.
     used for teacher generation.
@@ -637,8 +640,8 @@ def generate(params, model: TeacherStudent, rng, n_sample, noise_level, guidance
         y = jax.random.randint(rng_used_2, (n_sample,), 0, model.num_classes)
     else:
         y = None
-    
-    rev_fn = reverse_student if use_student else partial(reverse, temp=1.0, guidance_method=guidance_method)
+
+    rev_fn = partial(reverse_student, guidance_interval=guidance_interval) if use_student else partial(reverse, temp=1.0, guidance_method=guidance_method)
     if label_cond:
         x = rev_fn(params, model, z, y, guidance=guidance)
     else:

@@ -112,7 +112,12 @@ def main(argv):
         else: 
             f()
 
-    search_cfg()
+    # search_cfg()
+
+    for guidance_interval in [[0, 1, 2], [0, 1], [1, 2, 3]]:
+        c.fid.guidance_interval = guidance_interval
+        c.wandb_name = f"vit-S-n0.15clipmaT-cfg-{guidance_interval}-5k"
+        search_cfg()
 
 
 if __name__ == "__main__":

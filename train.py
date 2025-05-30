@@ -233,7 +233,7 @@ def train_step_with_vae(state, batch, rng_init, learning_rate_fn, ema_scales_fn,
     return state, metrics
 
 
-def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_level, guidance, guidance_method, temperature=1.0, label_cond=True, student=True, just_prior=False):
+def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_level, guidance, guidance_method, guidance_interval, temperature=1.0, label_cond=True, student=True, just_prior=False):
     """
     Generate samples from the train state.
 
@@ -249,7 +249,7 @@ def sample_step(params, sample_idx, model, rng_init, device_batch_size, noise_le
         x_all = x_all.reshape(-1, *x_all.shape[2:])
         return z_all
     
-    images = generate(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, guidance_method=guidance_method, noise_level=noise_level, temperature=temperature, label_cond=label_cond, use_student=student)
+    images = generate(params, model, rng_sample, n_sample=device_batch_size, guidance=guidance, guidance_method=guidance_method, guidance_interval=guidance_interval, noise_level=noise_level, temperature=temperature, label_cond=label_cond, use_student=student)
     images = images.transpose((0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
     assert images.shape == (device_batch_size, 4, 32, 32)
     return images
@@ -374,7 +374,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             ).group()
         ka = ka[10:] # remove "kmh-tpuvm-"
         if rank == 0:
-            wandb.init(project="TS_imgnet" if not config.just_evaluate else "TS_imgnet_eval", dir=workdir, tags=['sqa'], name=config.wandb_name)
+            wandb.init(project="TS_imgnet" if not config.just_evaluate else "TS_imgnet_eval", dir=workdir, tags=['sqa', 'cfg-ablations'], name=config.wandb_name)
             wandb.config.update(config.to_dict())
             wandb.config.update({"ka": ka})
             wandb.run.notes = config.wandb_notes
@@ -514,6 +514,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> Train
             device_batch_size=device_batch_size,
             guidance=config.fid.guidance,
             guidance_method=config.fid.guidance_method,
+            guidance_interval=config.fid.guidance_interval,
             noise_level=config.training.noise_level,
             temperature=config.fid.temperature,
             label_cond=config.fid.label_cond,

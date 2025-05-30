@@ -40,16 +40,17 @@ fid:
     fid_times: 10
     # num_samples: 50000 # 50k
     num_samples: 5000
-    guidance: 0.0 # 0 for with label
+    guidance: 1.5 # 0 for with label
     guidance_method: x # not supported now
+    guidance_interval: [0, 1, 2, 3]
     # sanity_teacher: True
 
 load_teacher_from: /kmh-nfs-us-mount/logs/sqa/sqa_Flow_matching/20250516_154421_edg7t8_kmh-tpuvm-v4-32-preemptible-yiyang__b_lr_ep_eval/checkpoint_800640 # NF 47: bs1024, n0.15, clip ma 1, lr4e-4, 640ep
 
 load_from: /kmh-nfs-ssd-eu-mount/logs/sqa/TS_imgnet/20250517_123847_ftxda1_kmh-tpuvm-v3-32-13__b_lr_ep_eval/checkpoint_400320
-search_cfg: True
+# search_cfg: True
 just_evaluate: True # use this to just evaluate the model (without training)
 # just_prior: True # teacher generate image, then student generate latent
 save_by_fid: True
 
-wandb_notes: "noise 0.15 clip ma T vit S eval"
+wandb_notes: "noise 0.15 clip ma T vit S cfg ablations"
