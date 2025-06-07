@@ -69,6 +69,13 @@ def main(argv):
         else:
             return train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
+    def mid(a, b, shift):
+        """Returns the midpoint between a and b, rounded to the nearest shift."""
+        mid = (a + b) / 2
+        mid = round(mid / shift) * shift
+        assert a < mid < b, f"mid: {mid}, a: {a}, b: {b}"
+        return mid
+
     def search_cfg():
         if c.just_evaluate and c.search_cfg:
             first_search = [0.0, 1.0, 2.0] # modify this for your search.
@@ -76,13 +83,15 @@ def main(argv):
             shift = 0.5 # how exact your best cfg is
             fid = {}
             while True:
+                for k in fid.keys():
+                    if not k in search: search.append(k)
                 search = sorted(search)
                 for guidance in search:
                     if guidance in fid:
                         continue
                     log_for_0("Guidance: %f", guidance)
                     c.fid.guidance = guidance
-                    c.wandb_name = f"vit-S-n0.15clipmaT(4.5)-cfg-x-{guidance}-5k" # modify this for wandb
+                    c.wandb_name = f"vit-S-n0.15clipmaT(1.5)-cfg-x-{guidance:.2f}-5k" # modify this for wandb
                     fid[guidance] = f()
                     if fid[guidance] > 150: raise ValueError("FID is too high, please check your config.")
                 best_cfg = sorted(fid.items(), key=lambda x: x[1])[0][0]
@@ -90,12 +99,12 @@ def main(argv):
                 if best_cfg == search[-1]:
                     smaller = max([x for x in fid if x < best_cfg])
                     if best_cfg - smaller < shift:
-                        search.append((smaller + best_cfg) / 2)
+                        search.append(mid(smaller, best_cfg, shift))
                     search.append(2 * best_cfg - smaller)
                 elif best_cfg == search[0]:
                     greater = min([x for x in fid if x > best_cfg])
                     if greater - best_cfg < shift:
-                        search.append((greater + best_cfg) / 2)
+                        search.append(mid(best_cfg, greater, shift))
                     search.append(2 * best_cfg - greater)
                 else:
                     # normal case
@@ -103,9 +112,9 @@ def main(argv):
                     greater = min([x for x in fid if x > best_cfg])
                     smaller = max([x for x in fid if x < best_cfg])
                     if greater - best_cfg > shift:
-                        search.append((greater + best_cfg) / 2)
+                        search.append(mid(best_cfg, greater, shift))
                     if best_cfg - smaller > shift:
-                        search.append((smaller + best_cfg) / 2)
+                        search.append(mid(smaller, best_cfg, shift))
                 if len(search) == len(fid):
                     log_for_0(f"Best cfg: {best_cfg}, FID: {fid[best_cfg]}")
                     return
